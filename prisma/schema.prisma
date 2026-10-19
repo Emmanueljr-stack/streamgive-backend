@@ -34,6 +34,8 @@ model Ngo {
   updatedAt    DateTime @updatedAt @map("updated_at")
   streams      Stream[]
 
+  @@index([createdAt])
+  @@index([verified])
   @@map("ngos")
 }
 
@@ -67,6 +69,10 @@ model Stream {
 
   @@index([donorId])
   @@index([ngoId])
+  @@index([createdAt])
+  @@index([status])
+  @@index([tokenAddress])
+  @@index([ngoId, createdAt])
   @@map("streams")
 }
 
@@ -99,6 +105,7 @@ model NgoApplication {
 
   @@index([ownerAddress])
   @@index([status])
+  @@index([createdAt])
   @@map("ngo_applications")
 }
 
@@ -177,6 +184,7 @@ model StreamEvent {
   createdAt DateTime @default(now()) @map("created_at")
 
   @@index([streamId])
+  @@index([streamId, createdAt])
   @@index([type])
   @@index([ledger])
   @@map("stream_events")
