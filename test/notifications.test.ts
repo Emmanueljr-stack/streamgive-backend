@@ -40,6 +40,7 @@ describe('notification service', () => {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify(event),
+        signal: expect.any(AbortSignal),
       }),
     );
   });

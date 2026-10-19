@@ -1,11 +1,14 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
+import { prisma } from '../src/db.js';
 import { buildServer } from '../src/server.js';
+import * as rpc from '../src/stellar/rpc.js';
 
 describe('CORS configuration', () => {
   const originalCorsOrigins = process.env.CORS_ORIGINS;
 
   afterEach(() => {
+    vi.restoreAllMocks();
     if (originalCorsOrigins === undefined) {
       delete process.env.CORS_ORIGINS;
     } else {
@@ -15,11 +18,13 @@ describe('CORS configuration', () => {
 
   it('returns CORS headers for configured allowed origin', async () => {
     process.env.CORS_ORIGINS = 'http://localhost:3001,http://localhost:3000';
+    vi.spyOn(prisma, '$queryRaw').mockResolvedValue([{}]);
+    vi.spyOn(rpc, 'getLatestLedgerSequence').mockResolvedValue(1);
     const app = buildServer();
 
     const response = await app.inject({
       method: 'GET',
-      url: '/v1/health',
+      url: '/health',
       headers: {
         origin: 'http://localhost:3001',
       },
@@ -37,7 +42,7 @@ describe('CORS configuration', () => {
 
     const response = await app.inject({
       method: 'OPTIONS',
-      url: '/v1/health',
+      url: '/health',
       headers: {
         origin: 'http://localhost:3001',
         'access-control-request-method': 'GET',

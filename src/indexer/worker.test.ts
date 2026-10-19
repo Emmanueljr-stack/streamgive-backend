@@ -12,7 +12,7 @@ describe('startIndexer', () => {
   beforeEach(() => {
     vi.useFakeTimers();
     vi.spyOn(contracts, 'WATCHED_CONTRACT_IDS', 'get').mockReturnValue(['C_TEST']);
-    vi.mocked(checkpoint.getCheckpoint).mockResolvedValue(100);
+    vi.mocked(checkpoint.getCheckpointState).mockResolvedValue({ lastLedger: 100 });
     vi.mocked(checkpoint.saveCheckpoint).mockResolvedValue();
     vi.mocked(rpc.getLatestLedgerSequence).mockResolvedValue(100);
     vi.mocked(rpc.rpcServer.getEvents).mockResolvedValue({
@@ -30,11 +30,11 @@ describe('startIndexer', () => {
     const handler = vi.fn();
     const stop = startIndexer(handler);
 
-    await vi.runAllTimersAsync();
-    const stop$ = stop();
-    await stop$;
+    await vi.advanceTimersByTimeAsync(0);
+    expect(vi.mocked(rpc.getLatestLedgerSequence)).toHaveBeenCalledTimes(1);
 
     const callsBefore = vi.mocked(rpc.getLatestLedgerSequence).mock.calls.length;
+    await stop();
     await vi.runAllTimersAsync();
     expect(vi.mocked(rpc.getLatestLedgerSequence).mock.calls.length).toBe(callsBefore);
   });
