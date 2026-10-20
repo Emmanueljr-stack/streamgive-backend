@@ -151,4 +151,26 @@ describe('GET /health/ready', () => {
 
     await app.close();
   });
+
+  it('parses INDEXER_LAG_THRESHOLD as NaN for non-numeric values and treats them as 0', async () => {
+    const original = process.env.INDEXER_LAG_THRESHOLD;
+    process.env.INDEXER_LAG_THRESHOLD = 'abc';
+
+    vi.spyOn(await import('../../src/stellar/rpc.js'), 'getLatestLedgerSequence').mockResolvedValue(10001);
+    vi.spyOn(await import('../../src/indexer/checkpoint.js'), 'getCheckpoint').mockResolvedValue(10000);
+
+    const app = buildServer();
+    const response = await app.inject({ method: 'GET', url: '/health/ready' });
+    expect(response.statusCode).toBe(503);
+    const body = response.json();
+    expect(body.status).toBe('error');
+    expect(body.reason).toBe('indexer_lagging');
+    expect(body.lag).toBe(1);
+    expect(isNaN(body.threshold)).toBe(true);
+
+    await app.close();
+
+    if (original === undefined) delete process.env.INDEXER_LAG_THRESHOLD;
+    else process.env.INDEXER_LAG_THRESHOLD = original;
+  });
 });

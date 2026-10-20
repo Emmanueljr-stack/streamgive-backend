@@ -32,9 +32,15 @@ describe('parseTrustProxy helper', () => {
       expect(hop2('127.0.0.1', 1)).toBe(true);
       expect(hop2('127.0.0.1', 2)).toBe(false);
     }
+  });
 
+  it('treats zero and negative hop counts as false', () => {
     expect(parseTrustProxy('0')).toBe(false);
     expect(parseTrustProxy('-1')).toBe(false);
+  });
+
+  it('treats non-numeric strings as IP/CIDR values', () => {
+    expect(parseTrustProxy('abc')).toBe('abc');
   });
 
   it('parses single IP or CIDR strings', () => {
