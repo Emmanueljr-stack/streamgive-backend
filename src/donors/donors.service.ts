@@ -1,6 +1,12 @@
 import { Injectable, BadRequestException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service'; // adjust path as needed
 
+interface DonorRow {
+  id: string;
+  name: string;
+  totalAmount: number | string;
+}
+
 @Injectable()
 export class DonorsService {
   constructor(private readonly prisma: PrismaService) {}
@@ -18,7 +24,7 @@ export class DonorsService {
         if (isNaN(cursorSortValue) || !cursorId) {
           throw new Error('Invalid cursor format');
         }
-      } catch (err) {
+      } catch {
         throw new BadRequestException('Invalid pagination cursor');
       }
     }
@@ -42,8 +48,8 @@ export class DonorsService {
       LIMIT ${limit + 1}
     `;
 
-    const hasMore = (donors as any[]).length > limit;
-    const paginatedDonors = hasMore ? (donors as any[]).slice(0, limit) : donors;
+    const hasMore = (donors as DonorRow[]).length > limit;
+    const paginatedDonors = hasMore ? (donors as DonorRow[]).slice(0, limit) : (donors as DonorRow[]);
 
     let nextCursor: string | null = null;
     if (hasMore && paginatedDonors.length > 0) {

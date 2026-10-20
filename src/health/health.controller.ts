@@ -2,11 +2,20 @@ import { Controller, Get, HttpStatus, Res } from '@nestjs/common';
 import { Response } from 'express';
 // Import your database health indicator and indexer service / config
 
+interface DatabaseHealthIndicator {
+  pingCheck(key: string): Promise<{ status: string }>;
+}
+
+interface IndexerService {
+  getConfiguredContractIds?(): string[];
+  isRunning(): boolean;
+}
+
 @Controller('health')
 export class HealthController {
   constructor(
-    private readonly databaseHealthIndicator: any, // replace with actual DB health service
-    private readonly indexerService: any // replace with actual indexer service/config
+    private readonly databaseHealthIndicator: DatabaseHealthIndicator, // replace with actual DB health service
+    private readonly indexerService: IndexerService // replace with actual indexer service/config
   ) {}
 
   @Get('ready')
@@ -14,11 +23,11 @@ export class HealthController {
     const configuredContracts = this.indexerService?.getConfiguredContractIds?.() || [];
     const isIndexerEnabled = configuredContracts.length > 0;
 
-    let dbStatus = { status: 'up' };
+    let dbStatus: { status: string; error?: string };
     try {
       dbStatus = await this.databaseHealthIndicator.pingCheck('database');
     } catch (error) {
-      dbStatus = { status: 'down', error: error.message };
+      dbStatus = { status: 'down', error: error instanceof Error ? error.message : String(error) };
     }
 
     // If indexer has no contracts configured, treat as disabled (healthy for traffic routing)

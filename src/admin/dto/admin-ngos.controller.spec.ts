@@ -1,16 +1,8 @@
-import { Test, TestingModule } from '@nestjs/testing';
-import { BadRequestException, ValidationPipe } from '@nestjs/common';
 import { plainToInstance } from 'class-transformer';
 import { validate } from 'class-validator';
 import { UpdateNgoDto } from './dtos/update-ngo.dto';
 
 describe('UpdateNgoDto Validation (#285)', () => {
-  let validatorPipe: ValidationPipe;
-
-  beforeEach(() => {
-    validatorPipe = new ValidationPipe({ transform: true, whitelist: true });
-  });
-
   it('should reject an empty string as displayName', async () => {
     const dto = plainToInstance(UpdateNgoDto, { displayName: '   ' });
     const errors = await validate(dto);

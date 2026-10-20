@@ -1,18 +1,37 @@
 import { Controller, Post, Body, Param, HttpCode, HttpStatus, Logger } from '@nestjs/common';
 // Import your application service and notification service
 
+interface ApplicationRecord {
+  id: string;
+}
+
+interface ApplicationsService {
+  create(dto: unknown): Promise<ApplicationRecord>;
+  review(id: string, dto: unknown): Promise<ApplicationRecord>;
+}
+
+interface NotificationService {
+  notify(event: { type: string; targetId: string }): Promise<void>;
+}
+
+function errorDetails(error: unknown): { message: string; stack?: string } {
+  return error instanceof Error
+    ? { message: error.message, stack: error.stack }
+    : { message: String(error) };
+}
+
 @Controller('applications')
 export class ApplicationsController {
   private readonly logger = new Logger(ApplicationsController.name);
 
   constructor(
-    private readonly applicationsService: any,
-    private readonly notificationService: any
+    private readonly applicationsService: ApplicationsService,
+    private readonly notificationService: NotificationService
   ) {}
 
   @Post()
   @HttpCode(HttpStatus.CREATED)
-  async createApplication(@Body() createDto: any) {
+  async createApplication(@Body() createDto: unknown) {
     // 1. Commit application creation
     const application = await this.applicationsService.create(createDto);
 
@@ -23,7 +42,8 @@ export class ApplicationsController {
         targetId: application.id,
       });
     } catch (error) {
-      this.logger.error(`Failed to record notification log for application ${application.id}: ${error.message}`, error.stack);
+      const { message, stack } = errorDetails(error);
+      this.logger.error(`Failed to record notification log for application ${application.id}: ${message}`, stack);
     }
 
     return application;
@@ -31,7 +51,7 @@ export class ApplicationsController {
 
   @Post(':id/review')
   @HttpCode(HttpStatus.OK)
-  async reviewApplication(@Param('id') id: string, @Body() reviewDto: any) {
+  async reviewApplication(@Param('id') id: string, @Body() reviewDto: unknown) {
     // 1. Commit application review update
     const updatedApplication = await this.applicationsService.review(id, reviewDto);
 
@@ -42,7 +62,8 @@ export class ApplicationsController {
         targetId: updatedApplication.id,
       });
     } catch (error) {
-      this.logger.error(`Failed to record notification log for application review ${updatedApplication.id}: ${error.message}`, error.stack);
+      const { message, stack } = errorDetails(error);
+      this.logger.error(`Failed to record notification log for application review ${updatedApplication.id}: ${message}`, stack);
     }
 
     return updatedApplication;

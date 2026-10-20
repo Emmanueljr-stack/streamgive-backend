@@ -3,7 +3,7 @@ import { Logger } from '@nestjs/common';
 export class NotificationsService {
   private readonly logger = new Logger(NotificationsService.name);
 
-  async notifyWebhook(webhookUrl: string, payload: any): Promise<void> {
+  async notifyWebhook(webhookUrl: string, payload: unknown): Promise<void> {
     try {
       const response = await fetch(webhookUrl, {
         method: 'POST',
@@ -25,13 +25,16 @@ export class NotificationsService {
           `webhook notification failed with status ${response.status} for ${redactedOrigin}`
         );
       }
-    } catch (error: any) {
+    } catch (error: unknown) {
       let redactedOrigin = 'unknown-origin';
       try {
         redactedOrigin = new URL(webhookUrl).origin;
-      } catch {}
+      } catch {
+        // keep the default placeholder when the URL cannot be parsed
+      }
 
-      this.logger.error(`webhook notification error for ${redactedOrigin}: ${error.message}`);
+      const message = error instanceof Error ? error.message : String(error);
+      this.logger.error(`webhook notification error for ${redactedOrigin}: ${message}`);
     }
   }
 }

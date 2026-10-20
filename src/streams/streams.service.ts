@@ -18,7 +18,7 @@ export class StreamsService {
         if (isNaN(cursorCreatedAt.getTime()) || !cursorId) {
           throw new Error('Invalid cursor');
         }
-      } catch (err) {
+      } catch {
         throw new BadRequestException('Invalid pagination cursor');
       }
     }
