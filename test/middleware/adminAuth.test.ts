@@ -1,6 +1,7 @@
 import { Keypair } from '@stellar/stellar-sdk';
 import { afterAll, describe, expect, it } from 'vitest';
 
+import { sep53Hash } from '../../src/middleware/adminAuth.js';
 import { buildServer } from '../../src/server.js';
 import { signAdminRequest } from '../helpers/adminAuth.js';
 
@@ -102,5 +103,66 @@ describe('requireAdminSignature', () => {
 
     expect(response.statusCode).toBe(503);
     expect(response.body.error).toBe('admin_auth_not_configured');
+  });
+
+  it('rejects non-numeric timestamps', async () => {
+    configureAdmins(legacyAdmin.publicKey());
+
+    const app = buildServer();
+    const headers = signAdminRequest(legacyAdmin, 'GET', '/ngo-applications');
+    headers['x-admin-timestamp'] = 'abc';
+
+    const response = await app.inject({
+      method: 'GET',
+      url: '/ngo-applications',
+      headers,
+    });
+
+    expect(response.statusCode).toBe(401);
+    expect(response.json().error).toBe('stale_signature');
+
+    await app.close();
+  });
+
+  it('rejects malformed admin addresses', async () => {
+    configureAdmins(legacyAdmin.publicKey());
+
+    const app = buildServer();
+    const headers = signAdminRequest(legacyAdmin, 'GET', '/ngo-applications');
+    headers['x-admin-address'] = 'not-a-stellar-address';
+
+    const response = await app.inject({
+      method: 'GET',
+      url: '/ngo-applications',
+      headers,
+    });
+
+    expect(response.statusCode).toBe(401);
+    expect(response.json().error).toBe('unauthorized');
+
+    await app.close();
+  });
+
+  it('accepts hex-encoded signatures', async () => {
+    configureAdmins(legacyAdmin.publicKey());
+
+    const app = buildServer();
+    const timestamp = Date.now().toString();
+    const payload = `GET:/ngo-applications:${timestamp}`;
+    const signatureHex = Buffer.from(legacyAdmin.sign(sep53Hash(payload))).toString('hex');
+
+    const response = await app.inject({
+      method: 'GET',
+      url: '/ngo-applications',
+      headers: {
+        'x-admin-address': legacyAdmin.publicKey(),
+        'x-admin-signature': signatureHex,
+        'x-admin-timestamp': timestamp,
+      },
+    });
+
+    expect(response.statusCode).toBe(200);
+
+    await app.close();
   });
 });

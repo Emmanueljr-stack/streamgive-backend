@@ -25,4 +25,22 @@ describe('OpenAPI documentation', () => {
 
     await app.close();
   });
+
+  it('documents the /v1/streams query parameters generated from the validation schema', async () => {
+    const app = buildServer();
+    await app.ready();
+
+    const streamsGet = app.swagger().paths?.['/v1/streams']?.get;
+    expect(streamsGet).toBeDefined();
+
+    const names = (streamsGet?.parameters ?? [])
+      .filter((param: { in?: string }) => param.in === 'query')
+      .map((param: { name: string }) => param.name);
+
+    expect(names).toEqual(
+      expect.arrayContaining(['donor', 'ngo', 'ngoAddress', 'token', 'status', 'limit', 'cursor']),
+    );
+
+    await app.close();
+  });
 });

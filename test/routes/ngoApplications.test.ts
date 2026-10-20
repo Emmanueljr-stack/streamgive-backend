@@ -11,15 +11,35 @@ import { fakeAddress, resetDb } from '../helpers/db.js';
 import { signAdminRequest } from '../helpers/adminAuth.js';
 
 const adminKeypair = Keypair.random();
+const applicationOwnerKeypair = Keypair.random();
 
 function validApplicationPayload(overrides: Partial<Record<string, unknown>> = {}) {
   return {
-    ownerAddress: fakeAddress('A'),
+    ownerAddress: applicationOwnerKeypair.publicKey(),
     name: 'Test NGO',
     description: 'A test NGO description.',
     contactEmail: 'ngo@example.com',
     ...overrides,
   };
+}
+
+async function signedApplicationPayload(
+  app: ReturnType<typeof buildServer>,
+  overrides: Partial<Record<string, unknown>> = {},
+  signer: Keypair = applicationOwnerKeypair,
+) {
+  const payload = validApplicationPayload(overrides);
+  const challengeResponse = await app.inject({
+    method: 'POST',
+    url: '/v1/ngo-applications/challenge',
+    payload: { ownerAddress: payload.ownerAddress },
+  });
+  if (challengeResponse.statusCode !== 201) {
+    throw new Error(`Failed to issue application challenge: ${challengeResponse.statusCode}`);
+  }
+  const challengeData = challengeResponse.json() as { challenge: string; message: string };
+  const signature = Buffer.from(signer.sign(sep53Hash(challengeData.message))).toString('base64');
+  return { ...payload, challenge: challengeData.challenge, signature };
 }
 
 describe('POST /v1/ngo-applications', () => {
@@ -38,7 +58,7 @@ describe('POST /v1/ngo-applications', () => {
     const response = await app.inject({
       method: 'POST',
       url: '/v1/ngo-applications',
-      payload: validApplicationPayload(),
+      payload: await signedApplicationPayload(app),
     });
 
     expect(response.statusCode).toBe(201);
@@ -53,13 +73,47 @@ describe('POST /v1/ngo-applications', () => {
     await app.close();
   });
 
+  it('rejects a signature from another Stellar key', async () => {
+    const app = buildServer();
+    const response = await app.inject({
+      method: 'POST',
+      url: '/v1/ngo-applications',
+      payload: await signedApplicationPayload(app, {}, Keypair.random()),
+    });
+
+    expect(response.statusCode).toBe(401);
+    expect(response.json().error).toBe('invalid_signature');
+
+    await app.close();
+  });
+
+  it('rejects an expired challenge', async () => {
+    const app = buildServer();
+    const payload = await signedApplicationPayload(app);
+    await prisma.ngoApplicationChallenge.update({
+      where: { challenge: payload.challenge },
+      data: { expiresAt: new Date(Date.now() - 1000) },
+    });
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/v1/ngo-applications',
+      payload,
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect(response.json().error).toBe('invalid_or_expired_challenge');
+
+    await app.close();
+  });
+
   it('rejects invalid input with 400', async () => {
     const app = buildServer();
 
     const response = await app.inject({
       method: 'POST',
       url: '/v1/ngo-applications',
-      payload: validApplicationPayload({ contactEmail: 'not-an-email' }),
+      payload: await signedApplicationPayload(app, { contactEmail: 'not-an-email' }),
     });
 
     expect(response.statusCode).toBe(400);
@@ -73,7 +127,7 @@ describe('POST /v1/ngo-applications', () => {
     const response = await app.inject({
       method: 'POST',
       url: '/v1/ngo-applications',
-      payload: validApplicationPayload({ website: 'example.org' }),
+      payload: await signedApplicationPayload(app, { website: 'example.org' }),
     });
 
     expect(response.statusCode).toBe(201);
@@ -88,7 +142,7 @@ describe('POST /v1/ngo-applications', () => {
     const response = await app.inject({
       method: 'POST',
       url: '/v1/ngo-applications',
-      payload: validApplicationPayload({ website: 'https://example.org' }),
+      payload: await signedApplicationPayload(app, { website: 'https://example.org' }),
     });
 
     expect(response.statusCode).toBe(201);
@@ -100,10 +154,11 @@ describe('POST /v1/ngo-applications', () => {
   it('rejects a malformed ownerAddress with 400', async () => {
     const app = buildServer();
 
+    const payload = validApplicationPayload({ ownerAddress: 'invalid-stellar-address' });
     const response = await app.inject({
       method: 'POST',
       url: '/v1/ngo-applications',
-      payload: validApplicationPayload({ ownerAddress: 'invalid-stellar-address' }),
+      payload: { ...payload, challenge: '00000000-0000-4000-8000-000000000000', signature: 'invalid' },
     });
 
     expect(response.statusCode).toBe(400);
@@ -113,12 +168,16 @@ describe('POST /v1/ngo-applications', () => {
 
   it('rejects a second pending application from the same address with 409', async () => {
     const app = buildServer();
-    const payload = validApplicationPayload();
+    const payload = await signedApplicationPayload(app);
 
     const first = await app.inject({ method: 'POST', url: '/v1/ngo-applications', payload });
     expect(first.statusCode).toBe(201);
 
-    const second = await app.inject({ method: 'POST', url: '/v1/ngo-applications', payload });
+    const second = await app.inject({
+      method: 'POST',
+      url: '/v1/ngo-applications',
+      payload: await signedApplicationPayload(app),
+    });
     expect(second.statusCode).toBe(409);
 
     await app.close();
@@ -126,10 +185,10 @@ describe('POST /v1/ngo-applications', () => {
 
   it('rejects a new application from an already-approved NGO with 409 already_approved', async () => {
     const app = buildServer();
-    const payload = validApplicationPayload();
+    const payload = await signedApplicationPayload(app);
 
     await prisma.ngoApplication.create({
-      data: { ...payload, status: 'APPROVED' },
+      data: { ...validApplicationPayload(), status: 'APPROVED' },
     });
 
     const response = await app.inject({ method: 'POST', url: '/v1/ngo-applications', payload });
@@ -141,10 +200,10 @@ describe('POST /v1/ngo-applications', () => {
 
   it('allows a rejected applicant to submit a new application', async () => {
     const app = buildServer();
-    const payload = validApplicationPayload();
+    const payload = await signedApplicationPayload(app);
 
     await prisma.ngoApplication.create({
-      data: { ...payload, status: 'REJECTED' },
+      data: { ...validApplicationPayload(), status: 'REJECTED' },
     });
 
     const response = await app.inject({ method: 'POST', url: '/v1/ngo-applications', payload });
@@ -156,14 +215,17 @@ describe('POST /v1/ngo-applications', () => {
 
   it('lets only one of two concurrent submissions through', async () => {
     const app = buildServer();
-    const payload = validApplicationPayload();
+    const [firstPayload, secondPayload] = await Promise.all([
+      signedApplicationPayload(app),
+      signedApplicationPayload(app),
+    ]);
 
     // Fired together rather than awaited in sequence: sequential requests are
     // already covered above, and only a genuine overlap exercises the race
     // where both requests read "nothing blocking" before either inserts.
     const [first, second] = await Promise.all([
-      app.inject({ method: 'POST', url: '/ngo-applications', payload }),
-      app.inject({ method: 'POST', url: '/ngo-applications', payload }),
+      app.inject({ method: 'POST', url: '/ngo-applications', payload: firstPayload }),
+      app.inject({ method: 'POST', url: '/ngo-applications', payload: secondPayload }),
     ]);
 
     expect([first.statusCode, second.statusCode].sort((a, b) => a - b)).toEqual([201, 409]);
@@ -172,7 +234,7 @@ describe('POST /v1/ngo-applications', () => {
     expect(loser.json().error).toBe('application_already_pending');
 
     const stored = await prisma.ngoApplication.findMany({
-      where: { ownerAddress: payload.ownerAddress },
+      where: { ownerAddress: firstPayload.ownerAddress },
     });
     expect(stored).toHaveLength(1);
     expect(stored[0].status).toBe('PENDING');

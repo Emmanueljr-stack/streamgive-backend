@@ -37,15 +37,41 @@ describe('CORS configuration', () => {
 
     const response = await app.inject({
       method: 'OPTIONS',
-      url: '/v1/health',
+      url: '/v1/ngo-applications',
       headers: {
         origin: 'http://localhost:3001',
-        'access-control-request-method': 'GET',
+        'access-control-request-method': 'POST',
+        'access-control-request-headers': 'x-admin-address,x-admin-signature,x-admin-timestamp',
       },
     });
 
     expect(response.statusCode).toBe(204);
     expect(response.headers['access-control-allow-origin']).toBe('http://localhost:3001');
+    const allowedHeaders = String(response.headers['access-control-allow-headers'])
+      .split(',')
+      .map((header) => header.trim().toLowerCase());
+    expect(allowedHeaders).toEqual(
+      expect.arrayContaining(['x-admin-address', 'x-admin-signature', 'x-admin-timestamp']),
+    );
+
+    await app.close();
+  });
+
+  it('omits access-control-allow-origin for an origin outside the allowlist', async () => {
+    process.env.CORS_ORIGINS = 'https://app.streamgive.example';
+    const app = buildServer();
+
+    const response = await app.inject({
+      method: 'OPTIONS',
+      url: '/v1/ngo-applications',
+      headers: {
+        origin: 'https://evil.example',
+        'access-control-request-method': 'POST',
+        'access-control-request-headers': 'x-admin-address,x-admin-signature,x-admin-timestamp',
+      },
+    });
+
+    expect(response.headers['access-control-allow-origin']).toBeUndefined();
 
     await app.close();
   });

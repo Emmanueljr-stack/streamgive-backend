@@ -35,6 +35,17 @@ const querySchema = z.object({
   cursor: z.string().uuid().optional(),
 });
 
+/**
+ * OpenAPI description of the `/streams` query, generated from `querySchema` so
+ * the documented parameters cannot drift from what is actually validated.
+ * `$schema` is dropped because it is not valid inside an OpenAPI parameter.
+ */
+const querystringDocs = z.toJSONSchema(querySchema, {
+  io: 'input',
+  unrepresentable: 'any',
+}) as Record<string, unknown>;
+delete querystringDocs.$schema;
+
 /** Params for stream detail and activity routes; `id` must be a stream UUID. */
 const idParamSchema = z.object({ id: z.string().uuid() });
 
@@ -82,27 +93,21 @@ export async function streamRoutes(app: FastifyInstance): Promise<void> {
    * @route GET /v1/streams
    * @query donor, ngo, ngoAddress, token, status, limit, cursor
    * @auth Public
-   * @returns 200 `{ streams: Stream[], hasMore: boolean, nextCursor: string | null }`; 400 invalid query or cursor.
+   * @returns 200 `{ streams: Stream[], hasMore: boolean, nextCursor: string | null }`; 400 `{ error: "invalid_request", details }` for any invalid query parameter.
    */
   app.get(
     '/streams',
     {
+      // `querySchema` is the only validator for this query. Fastify would
+      // otherwise also validate `schema.querystring` with Ajv and reject some
+      // requests first with a body that has no `details`, so Fastify's own
+      // validation is turned off here and `schema.querystring` below is documentation only.
+      validatorCompiler: () => (data) => ({ value: data }),
       schema: {
         tags: ['Streams'],
         summary: 'List donation streams',
         description: 'Returns streams newest first, with optional filters and cursor pagination.',
-        querystring: {
-          type: 'object',
-          properties: {
-            donor: { type: 'string', pattern: '^G[A-Z2-7]{55}$' },
-            ngo: { type: 'string', format: 'uuid' },
-            ngoAddress: { type: 'string', pattern: '^G[A-Z2-7]{55}$' },
-            token: { type: 'string', pattern: '^C[A-Z2-7]{55}$' },
-            status: { type: 'string', enum: ['ACTIVE', 'CANCELLED'] },
-            limit: { type: 'integer', minimum: 1, maximum: 100, default: 100 },
-            cursor: { type: 'string', format: 'uuid' },
-          },
-        },
+        querystring: querystringDocs,
         response: {
           200: { type: 'object', additionalProperties: true },
           400: { type: 'object', additionalProperties: true },
@@ -234,6 +239,9 @@ export async function streamRoutes(app: FastifyInstance): Promise<void> {
     const hasMore = rows.length > limit;
     const events = hasMore ? rows.slice(0, limit) : rows;
 
-    return { events: events.map(serializeStreamEvent), hasMore };
+    return sendPublicCacheable(request, reply, {
+      events: events.map(serializeStreamEvent),
+      hasMore,
+    });
   });
 }

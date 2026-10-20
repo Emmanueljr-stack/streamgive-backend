@@ -32,9 +32,15 @@ describe('parseTrustProxy helper', () => {
       expect(hop2('127.0.0.1', 1)).toBe(true);
       expect(hop2('127.0.0.1', 2)).toBe(false);
     }
+  });
 
+  it('treats zero and negative hop counts as false', () => {
     expect(parseTrustProxy('0')).toBe(false);
     expect(parseTrustProxy('-1')).toBe(false);
+  });
+
+  it('treats non-numeric strings as IP/CIDR values', () => {
+    expect(parseTrustProxy('abc')).toBe('abc');
   });
 
   it('parses single IP or CIDR strings', () => {
@@ -315,6 +321,56 @@ describe('trustProxy and rate limiter keying behind proxy', () => {
       payload: {},
     });
     expect(resB1.statusCode).toBe(400);
+
+    await app.close();
+  });
+});
+
+describe('rate limit 429 responses', () => {
+  const originalMax = process.env.RATE_LIMIT_MAX;
+  const originalWindow = process.env.RATE_LIMIT_WINDOW;
+
+  afterEach(() => {
+    if (originalMax === undefined) delete process.env.RATE_LIMIT_MAX;
+    else process.env.RATE_LIMIT_MAX = originalMax;
+    if (originalWindow === undefined) delete process.env.RATE_LIMIT_WINDOW;
+    else process.env.RATE_LIMIT_WINDOW = originalWindow;
+  });
+
+  it('includes a Retry-After header when the limit is exceeded', async () => {
+    process.env.RATE_LIMIT_MAX = '2';
+    process.env.RATE_LIMIT_WINDOW = '1 minute';
+
+    const app = buildServer();
+
+    const first = await app.inject({ method: 'GET', url: '/health' });
+    const second = await app.inject({ method: 'GET', url: '/health' });
+    const third = await app.inject({ method: 'GET', url: '/health' });
+
+    expect(first.statusCode).not.toBe(429);
+    expect(second.statusCode).not.toBe(429);
+    expect(third.statusCode).toBe(429);
+
+    const retryAfter = third.headers['retry-after'];
+    expect(retryAfter).toBeDefined();
+    expect(Number(retryAfter)).toBeGreaterThan(0);
+    expect(Number.isInteger(Number(retryAfter))).toBe(true);
+
+    await app.close();
+  });
+
+  it('applies the global limit to /health without a route-specific config', async () => {
+    process.env.RATE_LIMIT_MAX = '1';
+    process.env.RATE_LIMIT_WINDOW = '1 minute';
+
+    const app = buildServer();
+
+    const first = await app.inject({ method: 'GET', url: '/health' });
+    const second = await app.inject({ method: 'GET', url: '/health' });
+
+    expect(first.statusCode).not.toBe(429);
+    expect(first.headers['x-ratelimit-limit']).toBe('1');
+    expect(second.statusCode).toBe(429);
 
     await app.close();
   });
