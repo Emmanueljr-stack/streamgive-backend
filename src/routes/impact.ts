@@ -4,6 +4,7 @@ import { z } from 'zod';
 import { prisma } from '../db.js';
 import { sendPublicCacheable } from './cacheable.js';
 import { getPublicNgoName } from './ngoName.js';
+import { committedTotalsByToken } from './tokenTotals.js';
 
 /** Params for GET /v1/impact/:ngoId; `ngoId` must be an NGO UUID. */
 const paramsSchema = z.object({ ngoId: z.string().uuid() });
@@ -25,7 +26,9 @@ export async function impactRoutes(app: FastifyInstance): Promise<void> {
    */
   app.get('/impact', async (request, reply) => {
     const [streams, verifiedNgoCount] = await Promise.all([
-      prisma.stream.findMany({ select: { balance: true, withdrawn: true, status: true } }),
+      prisma.stream.findMany({
+        select: { balance: true, withdrawn: true, status: true, tokenAddress: true },
+      }),
       prisma.ngo.count({ where: { verified: true } }),
     ]);
 
@@ -44,6 +47,7 @@ export async function impactRoutes(app: FastifyInstance): Promise<void> {
 
     return sendPublicCacheable(request, reply, {
       totalCommitted: totalCommitted.toString(),
+      committedByToken: committedTotalsByToken(streams),
       totalWithdrawn: totalWithdrawn.toString(),
       activeStreams,
       verifiedNgoCount,
@@ -85,7 +89,15 @@ export async function impactRoutes(app: FastifyInstance): Promise<void> {
       const ngo = await prisma.ngo.findUnique({
         where: { id: ngoId },
         include: {
-          streams: { select: { status: true, balance: true, withdrawn: true, donorId: true } },
+          streams: {
+            select: {
+              status: true,
+              balance: true,
+              withdrawn: true,
+              donorId: true,
+              tokenAddress: true,
+            },
+          },
         },
       });
 
@@ -108,7 +120,7 @@ export async function impactRoutes(app: FastifyInstance): Promise<void> {
       // the first thing to replace with a maintained running total if the
       // streams table grows large.
       const allStreams = await prisma.stream.findMany({
-        select: { balance: true, withdrawn: true, status: true },
+        select: { balance: true, withdrawn: true, status: true, tokenAddress: true },
       });
       const platformCommitted = allStreams.reduce(
         (sum, s) =>
@@ -125,6 +137,8 @@ export async function impactRoutes(app: FastifyInstance): Promise<void> {
         ngoId: ngo.id,
         name: getPublicNgoName(ngo),
         totalCommitted: ngoCommitted.toString(),
+        committedByToken: committedTotalsByToken(ngo.streams),
+        platformCommittedByToken: committedTotalsByToken(allStreams),
         totalWithdrawn: ngoWithdrawn.toString(),
         activeStreams: ngo.streams.filter((s) => s.status === 'ACTIVE').length,
         cancelledStreams: ngo.streams.filter((s) => s.status === 'CANCELLED').length,
