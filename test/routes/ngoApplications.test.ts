@@ -336,6 +336,64 @@ describe('admin NGO application review', () => {
     await app.close();
   });
 
+  // Mirrors the 5-minute clock-skew window documented in ENVIRONMENT.md and
+  // API.md. Not exported from adminAuth.ts, so it's duplicated here rather
+  // than imported.
+  const MAX_CLOCK_SKEW_MS = 5 * 60 * 1000;
+
+  it('accepts a timestamp exactly at the clock-skew limit in the past', async () => {
+    const app = buildServer();
+    try {
+      vi.useFakeTimers();
+      const timestamp = (Date.now() - MAX_CLOCK_SKEW_MS).toString();
+      const headers = signAdminRequest(adminKeypair, 'GET', '/v1/ngo-applications', timestamp);
+
+      const response = await app.inject({ method: 'GET', url: '/v1/ngo-applications', headers });
+      expect(response.statusCode).toBe(200);
+    } finally {
+      vi.useRealTimers();
+      await app.close();
+    }
+  });
+
+  it('accepts a timestamp exactly at the clock-skew limit in the future', async () => {
+    const app = buildServer();
+    try {
+      vi.useFakeTimers();
+      const timestamp = (Date.now() + MAX_CLOCK_SKEW_MS).toString();
+      const headers = signAdminRequest(adminKeypair, 'GET', '/v1/ngo-applications', timestamp);
+
+      const response = await app.inject({ method: 'GET', url: '/v1/ngo-applications', headers });
+      expect(response.statusCode).toBe(200);
+    } finally {
+      vi.useRealTimers();
+      await app.close();
+    }
+  });
+
+  it('rejects a replay once its timestamp has aged out of the skew window, as stale rather than silently accepted', async () => {
+    const app = buildServer();
+    try {
+      vi.useFakeTimers();
+      const headers = signAdminRequest(adminKeypair, 'GET', '/v1/ngo-applications');
+
+      const first = await app.inject({ method: 'GET', url: '/v1/ngo-applications', headers });
+      expect(first.statusCode).toBe(200);
+
+      // Past the window the cached entry is pruned on the next request, but
+      // the replayed timestamp is by then also outside the skew window, so
+      // it must come back stale rather than slip through as a fresh replay.
+      vi.advanceTimersByTime(MAX_CLOCK_SKEW_MS + 1);
+
+      const replay = await app.inject({ method: 'GET', url: '/v1/ngo-applications', headers });
+      expect(replay.statusCode).toBe(401);
+      expect(replay.json().error).toBe('stale_signature');
+    } finally {
+      vi.useRealTimers();
+      await app.close();
+    }
+  });
+
   it('paginates applications while reporting the full total', async () => {
     const app = buildServer();
     await Promise.all(
