@@ -100,6 +100,15 @@ model NgoApplication {
   @@map("ngo_applications")
 }
 
+model NgoApplicationChallenge {
+  challenge    String   @id
+  ownerAddress String   @map("owner_address")
+  expiresAt    DateTime @map("expires_at")
+
+  @@index([ownerAddress, expiresAt])
+  @@map("ngo_application_challenges")
+}
+
 model NotificationLog {
   id        String   @id @default(uuid())
   eventId   String?  @map("event_id")
