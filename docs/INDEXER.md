@@ -109,9 +109,12 @@ the next poll instead of being skipped over a blip.
 
 ### Out-of-window behaviour
 
-The Stellar RPC only retains a sliding window of recent ledgers (typically the
-last ~17,280 ledgers / ~24 hours on Mainnet). It rejects a `getEvents` call
-whose `startLedger` falls outside that window with a JSON-RPC `-32600` error.
+The Stellar RPC only retains a sliding window of recent ledgers. The window is
+configured per endpoint and reported by `getHealth` as `ledgerRetentionWindow`:
+public Mainnet endpoints are typically ~17,280 ledgers (~24 hours), while the
+public Testnet endpoint that [`render.yaml`](../render.yaml) deploys against
+reports 120,960 (~7 days). It rejects a `getEvents` call whose `startLedger`
+falls outside that window with a JSON-RPC `-32600` error.
 
 Two ways the checkpoint can fall outside the window:
 
