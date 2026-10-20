@@ -338,10 +338,10 @@ export async function ngoRoutes(app: FastifyInstance): Promise<void> {
       committedByToken: committedTotalsByToken(streams),
     }));
 
-    return {
+    return sendPublicCacheable(request, reply, {
       donors,
       nextCursor: hasMore ? donors[donors.length - 1].id : null,
-    };
+    });
   });
 
   /**

@@ -234,6 +234,9 @@ export async function streamRoutes(app: FastifyInstance): Promise<void> {
     const hasMore = rows.length > limit;
     const events = hasMore ? rows.slice(0, limit) : rows;
 
-    return { events: events.map(serializeStreamEvent), hasMore };
+    return sendPublicCacheable(request, reply, {
+      events: events.map(serializeStreamEvent),
+      hasMore,
+    });
   });
 }

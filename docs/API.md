@@ -250,6 +250,8 @@ Lists donors with streams for this NGO. `committedByToken` reports each
 token's committed amount separately; `totalCommitted` remains as a legacy
 decimal-string field. Returns `400 {"error":"invalid_request"}` for invalid
 parameters and `404 {"error":"not_found"}` if the NGO does not exist.
+Responses include an `ETag` and `Cache-Control` with a 30-second public
+max-age; send `If-None-Match` to receive `304 Not Modified` when unchanged.
 
 ```json
 {
@@ -308,6 +310,8 @@ Returns donor totals across all streams.
 Each donor includes `committedByToken`, an array of `{ tokenAddress, amount }`
 entries, so committed amounts in different assets are reported independently.
 The legacy `totalCommitted` field remains available.
+Responses include an `ETag` and `Cache-Control` with a 30-second public
+max-age; send `If-None-Match` to receive `304 Not Modified` when unchanged.
 
 ```json
 {
@@ -339,6 +343,8 @@ Invalid query parameters or an unknown cursor return
 Returns one donor's totals, number of active streams, and distinct NGO count.
 `committedByToken` reports committed amounts separately for each token; the
 legacy `totalCommitted` field remains available.
+Responses include an `ETag` and `Cache-Control` with a 30-second public
+max-age; send `If-None-Match` to receive `304 Not Modified` when unchanged.
 Returns `400 {"error":"invalid_request"}` for an invalid address and
 `404 {"error":"not_found"}` if no donor exists.
 
