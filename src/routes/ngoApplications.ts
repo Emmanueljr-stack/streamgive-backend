@@ -28,14 +28,21 @@ const applicationSchema = z.object({
 });
 
 /**
+ * Largest `offset` the admin list accepts. The database scans and discards
+ * `offset` rows on every page, so an unbounded value lets one request force a
+ * scan of the whole table. Requests above this are rejected with 400.
+ */
+export const MAX_APPLICATION_LIST_OFFSET = 10_000;
+
+/**
  * Query for the admin list: optional status (`PENDING`, `APPROVED`, or
- * `REJECTED`), `limit` from 1–100 (default 100), and non-negative `offset`
- * (default 0).
+ * `REJECTED`), `limit` from 1–100 (default 100), and `offset` from
+ * 0–`MAX_APPLICATION_LIST_OFFSET` (default 0).
  */
 const listQuerySchema = z.object({
   status: z.enum(['PENDING', 'APPROVED', 'REJECTED']).optional(),
   limit: z.coerce.number().int().min(1).max(100).default(100),
-  offset: z.coerce.number().int().min(0).default(0),
+  offset: z.coerce.number().int().min(0).max(MAX_APPLICATION_LIST_OFFSET).default(0),
 });
 
 /** Params for application detail and review routes; `id` must be an application UUID. */
@@ -222,10 +229,13 @@ export async function ngoApplicationRoutes(app: FastifyInstance): Promise<void> 
 
   /**
    * Lists applications newest first with optional status and offset pagination.
+   * Rows are ordered by `createdAt` then `id` (both descending), so applications
+   * created at the same instant keep a fixed position and offset pages never
+   * repeat or skip a row.
    * @route GET /v1/ngo-applications
    * @query status, limit, offset
    * @auth Admin signature required via `x-admin-address`, `x-admin-timestamp`, and `x-admin-signature`.
-   * @returns 200 `{ applications: Application[], total, limit, offset }`; 400 `{ error: "invalid_request", details }`.
+   * @returns 200 `{ applications: Application[], total, limit, offset }`; 400 `{ error: "invalid_request", details }` (including `offset` above `MAX_APPLICATION_LIST_OFFSET`).
    */
   app.get('/ngo-applications', { preHandler: requireAdminSignature }, async (request, reply) => {
     const parsed = listQuerySchema.safeParse(request.query);
@@ -238,7 +248,7 @@ export async function ngoApplicationRoutes(app: FastifyInstance): Promise<void> 
     const [applications, total] = await Promise.all([
       prisma.ngoApplication.findMany({
         where,
-        orderBy: { createdAt: 'desc' },
+        orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
         take: parsed.data.limit,
         skip: parsed.data.offset,
       }),
