@@ -545,3 +545,32 @@ describe('events-per-poll cap', () => {
     );
   });
 });
+
+describe('startIndexer stop behavior', () => {
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.restoreAllMocks();
+    delete process.env.DONATION_VAULT_CONTRACT_ID;
+    delete process.env.INDEXER_POLL_INTERVAL_MS;
+  });
+
+  it('stops polling after the stop function is called', async () => {
+    process.env.DONATION_VAULT_CONTRACT_ID = mocks.contractId;
+    process.env.INDEXER_POLL_INTERVAL_MS = '5000';
+    vi.useFakeTimers();
+
+    mocks.getCheckpointState.mockResolvedValue({ lastLedger: 100 });
+    mocks.getLatestLedgerSequence.mockResolvedValue(100);
+    mocks.getEvents.mockResolvedValue({ events: [], latestLedger: 100 });
+
+    const { startIndexer } = await freshIndexer();
+    const stop = startIndexer(async () => {});
+
+    await vi.advanceTimersByTimeAsync(0);
+    const callsBeforeStop = mocks.getLatestLedgerSequence.mock.calls.length;
+    await stop();
+    await vi.advanceTimersByTimeAsync(10_000);
+
+    expect(mocks.getLatestLedgerSequence.mock.calls.length).toBe(callsBeforeStop);
+  });
+});

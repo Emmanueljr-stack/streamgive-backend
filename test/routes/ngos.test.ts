@@ -539,6 +539,10 @@ describe('GET /v1/ngos/:id', () => {
 
     const body = response.json();
     expect(body.stats.totalCommitted).toBe('1200');
+    expect(body.stats.committedByToken).toEqual([
+      { tokenAddress: fakeAddress('K'), amount: '1000' },
+      { tokenAddress: fakeAddress('L'), amount: '200' },
+    ]);
     expect(body.stats.totalWithdrawn).toBe('800');
     expect(body.stats.activeStreamCount).toBe(1);
     expect(body.stats.donorCount).toBe(2);
@@ -747,6 +751,30 @@ describe('GET /v1/ngos/:id/donors', () => {
         [donors[2].id, '10'],
       ]),
     );
+
+    await app.close();
+  });
+
+  it('returns an ETag and 304 for a matching If-None-Match header', async () => {
+    const app = buildServer();
+    const ngo = await prisma.ngo.create({
+      data: { ownerAddress: fakeAddress('V'), name: 'Cached NGO', verified: true },
+    });
+    const url = `/v1/ngos/${ngo.id}/donors`;
+
+    const first = await app.inject({ method: 'GET', url });
+    const etag = first.headers.etag;
+    expect(etag).toBeDefined();
+    expect(first.headers['cache-control']).toContain('max-age=30');
+
+    const cached = await app.inject({
+      method: 'GET',
+      url,
+      headers: { 'if-none-match': String(etag) },
+    });
+    expect(cached.statusCode).toBe(304);
+    expect(cached.body).toBe('');
+    expect(cached.headers.etag).toBe(etag);
 
     await app.close();
   });

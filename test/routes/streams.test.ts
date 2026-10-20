@@ -623,6 +623,42 @@ describe('GET /streams/:id/activity', () => {
     await app.close();
   });
 
+  it('returns an ETag and 304 for a matching If-None-Match header', async () => {
+    const app = buildServer();
+    const donor = await prisma.donor.create({ data: { address: fakeAddress('A') } });
+    const ngo = await prisma.ngo.create({
+      data: { ownerAddress: fakeAddress('B'), name: 'NGO', verified: true },
+    });
+    const stream = await prisma.stream.create({
+      data: {
+        onChainId: 1n,
+        donorId: donor.id,
+        ngoId: ngo.id,
+        tokenAddress: fakeAddress('D'),
+        rate: '1',
+        balance: '100',
+        withdrawn: '0',
+      },
+    });
+    const url = `/streams/${stream.id}/activity`;
+
+    const first = await app.inject({ method: 'GET', url });
+    const etag = first.headers.etag;
+    expect(etag).toBeDefined();
+    expect(first.headers['cache-control']).toContain('max-age=30');
+
+    const cached = await app.inject({
+      method: 'GET',
+      url,
+      headers: { 'if-none-match': String(etag) },
+    });
+    expect(cached.statusCode).toBe(304);
+    expect(cached.body).toBe('');
+    expect(cached.headers.etag).toBe(etag);
+
+    await app.close();
+  });
+
   it('paginates through events with a cursor', async () => {
     const app = buildServer();
 

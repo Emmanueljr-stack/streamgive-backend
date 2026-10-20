@@ -71,6 +71,21 @@ describe('notify', () => {
     );
   });
 
+  it('does not throw or block notify when the webhook request rejects', async () => {
+    process.env.NOTIFY_WEBHOOK_URL = 'https://example.com/webhook';
+
+    vi.spyOn(globalThis, 'fetch').mockRejectedValue(new Error('Network error'));
+    const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const failedEvent: NotificationEvent = {
+      type: 'ngo_revoked',
+      ownerAddress: 'G1234567890',
+      ngoId: 'ngo-123',
+    };
+
+    await expect(notify(failedEvent)).resolves.not.toThrow();
+    expect(consoleSpy).toHaveBeenCalled();
+  });
+
   it('writes a failure record when webhook returns non-2xx', async () => {
     process.env.NOTIFY_WEBHOOK_URL = 'http://example.com/webhook';
     vi.spyOn(console, 'error').mockImplementation(() => {});

@@ -1,16 +1,20 @@
 import type { FastifyInstance } from 'fastify';
+import { randomUUID } from 'node:crypto';
+import { Keypair, StrKey } from '@stellar/stellar-sdk';
 import { z } from 'zod';
 
 import { prisma } from '../db.js';
-import { requireAdminSignature } from '../middleware/adminAuth.js';
+import { requireAdminSignature, sep53Hash } from '../middleware/adminAuth.js';
 import { notify } from '../notifications/service.js';
+
+const APPLICATION_CHALLENGE_TTL_MS = 5 * 60 * 1000;
 
 /**
  * Submission body: `ownerAddress` must be a Stellar G... public key;
  * `name` and `description` are required (1–200 and 1–5000 characters);
  * `contactEmail` is a required email; optional `website` is normalized to
  * HTTPS when scheme-less and must be a URL; optional `country` is at most
- * 100 characters.
+ * 100 characters. `challenge` and `signature` prove control of ownerAddress.
  */
 const applicationSchema = z.object({
   ownerAddress: z.string().regex(/^G[A-Z2-7]{55}$/),
@@ -26,6 +30,41 @@ const applicationSchema = z.object({
   contactEmail: z.string().email(),
   country: z.string().max(100).optional(),
 });
+
+const applicationSubmissionSchema = applicationSchema.extend({
+  challenge: z.string().uuid(),
+  signature: z.string().min(1),
+});
+
+const challengeRequestSchema = z.object({
+  ownerAddress: z.string().regex(/^G[A-Z2-7]{55}$/),
+});
+
+function applicationChallengeMessage(ownerAddress: string, challenge: string, expiresAt: Date) {
+  return [
+    'StreamGive NGO application address verification',
+    `Owner address: ${ownerAddress}`,
+    `Challenge: ${challenge}`,
+    `Expires at: ${expiresAt.toISOString()}`,
+  ].join('\n');
+}
+
+function verifyApplicationSignature(
+  ownerAddress: string,
+  message: string,
+  signature: string,
+): boolean {
+  try {
+    if (!StrKey.isValidEd25519PublicKey(ownerAddress)) return false;
+    const keypair = Keypair.fromPublicKey(ownerAddress);
+    const candidates = [Buffer.from(signature, 'base64'), Buffer.from(signature, 'hex')];
+    return candidates.some(
+      (candidate) => candidate.length === 64 && keypair.verify(sep53Hash(message), candidate),
+    );
+  } catch {
+    return false;
+  }
+}
 
 /**
  * Query for the admin list: optional status (`PENDING`, `APPROVED`, or
@@ -98,11 +137,39 @@ async function createApplicationUnlessBlocked(data: z.infer<typeof applicationSc
 
 export async function ngoApplicationRoutes(app: FastifyInstance): Promise<void> {
   /**
+   * Issues a short-lived challenge that must be signed by the NGO owner address.
+   * @route POST /v1/ngo-applications/challenge
+   * @body `{ ownerAddress }`
+   * @returns 201 `{ challenge, message, expiresAt }`.
+   */
+  app.post('/ngo-applications/challenge', async (request, reply) => {
+    const parsed = challengeRequestSchema.safeParse(request.body);
+    if (!parsed.success) {
+      return reply.code(400).send({ error: 'invalid_request', details: parsed.error.flatten() });
+    }
+    if (!StrKey.isValidEd25519PublicKey(parsed.data.ownerAddress)) {
+      return reply.code(400).send({ error: 'invalid_request' });
+    }
+
+    const challenge = randomUUID();
+    const expiresAt = new Date(Date.now() + APPLICATION_CHALLENGE_TTL_MS);
+    const message = applicationChallengeMessage(parsed.data.ownerAddress, challenge, expiresAt);
+    await prisma.ngoApplicationChallenge.deleteMany({
+      where: { expiresAt: { lte: new Date() } },
+    });
+    await prisma.ngoApplicationChallenge.create({
+      data: { challenge, ownerAddress: parsed.data.ownerAddress, expiresAt },
+    });
+
+    return reply.code(201).send({ challenge, message, expiresAt });
+  });
+
+  /**
    * Submits a public NGO verification application.
    * @route POST /v1/ngo-applications
-   * @body applicationSchema
+   * @body applicationSchema plus a server-issued `challenge` and SEP-53 `signature`
    * @auth Public
-   * @returns 201 created application; 400 `{ error: "invalid_request", details }`; 409 `{ error: "already_approved" | "application_already_pending" }`.
+   * @returns 201 created application; 400 invalid request or signature; 409 `{ error: "already_approved" | "application_already_pending" }`.
    */
   app.post(
     '/ngo-applications',
@@ -117,12 +184,44 @@ export async function ngoApplicationRoutes(app: FastifyInstance): Promise<void> 
       },
     },
     async (request, reply) => {
-      const parsed = applicationSchema.safeParse(request.body);
+      const parsed = applicationSubmissionSchema.safeParse(request.body);
       if (!parsed.success) {
         return reply.code(400).send({ error: 'invalid_request', details: parsed.error.flatten() });
       }
 
-      const result = await createApplicationUnlessBlocked(parsed.data);
+      const { challenge, signature, ...applicationData } = parsed.data;
+      const challengeRecord = await prisma.ngoApplicationChallenge.findUnique({
+        where: { challenge },
+      });
+      if (
+        !challengeRecord ||
+        challengeRecord.ownerAddress !== applicationData.ownerAddress ||
+        challengeRecord.expiresAt.getTime() <= Date.now()
+      ) {
+        return reply.code(400).send({ error: 'invalid_or_expired_challenge' });
+      }
+
+      const message = applicationChallengeMessage(
+        challengeRecord.ownerAddress,
+        challenge,
+        challengeRecord.expiresAt,
+      );
+      if (!verifyApplicationSignature(applicationData.ownerAddress, message, signature)) {
+        return reply.code(401).send({ error: 'invalid_signature' });
+      }
+
+      const consumed = await prisma.ngoApplicationChallenge.deleteMany({
+        where: {
+          challenge,
+          ownerAddress: applicationData.ownerAddress,
+          expiresAt: { gt: new Date() },
+        },
+      });
+      if (consumed.count !== 1) {
+        return reply.code(400).send({ error: 'invalid_or_expired_challenge' });
+      }
+
+      const result = await createApplicationUnlessBlocked(applicationData);
       if (!result.ok) {
         if (result.status === 'APPROVED') {
           return reply.code(409).send({ error: 'already_approved' });
