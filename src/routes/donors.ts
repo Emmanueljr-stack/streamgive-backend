@@ -2,6 +2,7 @@ import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 
 import { prisma } from '../db.js';
+import { committedTotalsByToken } from './tokenTotals.js';
 
 /**
  * Query for GET /v1/donors: `sort` is committed or withdrawn (default
@@ -40,7 +41,7 @@ export async function donorRoutes(app: FastifyInstance): Promise<void> {
     const { sort, order, limit, cursor } = parsedQuery.data;
     const rows = await prisma.donor.findMany({
       include: {
-        streams: { select: { balance: true, withdrawn: true, status: true } },
+        streams: { select: { balance: true, withdrawn: true, status: true, tokenAddress: true } },
       },
     });
 
@@ -56,6 +57,7 @@ export async function donorRoutes(app: FastifyInstance): Promise<void> {
             0n,
           )
           .toString(),
+        committedByToken: committedTotalsByToken(streams),
         totalWithdrawn: streams
           .reduce((sum, stream) => sum + BigInt(stream.withdrawn), 0n)
           .toString(),
@@ -106,7 +108,13 @@ export async function donorRoutes(app: FastifyInstance): Promise<void> {
       where: { address: parsedParams.data.address },
       include: {
         streams: {
-          select: { ngoId: true, balance: true, withdrawn: true, status: true },
+          select: {
+            ngoId: true,
+            balance: true,
+            withdrawn: true,
+            status: true,
+            tokenAddress: true,
+          },
         },
       },
     });
@@ -135,6 +143,7 @@ export async function donorRoutes(app: FastifyInstance): Promise<void> {
     return {
       ...rest,
       totalCommitted,
+      committedByToken: committedTotalsByToken(streams),
       totalWithdrawn,
       activeStreamCount: streams.filter((stream) => stream.status === 'ACTIVE').length,
       distinctNgoCount: new Set(streams.map((stream) => stream.ngoId)).size,

@@ -61,7 +61,7 @@ describe('GET /v1/impact', () => {
         onChainId: 2n,
         donorId: donor.id,
         ngoId: ngo2.id,
-        tokenAddress: fakeAddress('T'),
+        tokenAddress: fakeAddress('U'),
         rate: '0',
         balance: '0',
         withdrawn: '200',
@@ -75,6 +75,10 @@ describe('GET /v1/impact', () => {
     const body = response.json();
     // committed = (600+400) + (0+200) = 1200
     expect(body.totalCommitted).toBe('1200');
+    expect(body.committedByToken).toEqual([
+      { tokenAddress: fakeAddress('T'), amount: '1000' },
+      { tokenAddress: fakeAddress('U'), amount: '200' },
+    ]);
     // withdrawn = 400 + 200 = 600
     expect(body.totalWithdrawn).toBe('600');
     expect(body.activeStreams).toBe(1);
@@ -217,7 +221,7 @@ describe('GET /v1/impact/:ngoId', () => {
         onChainId: 2n,
         donorId: donor2.id,
         ngoId: ngo1.id,
-        tokenAddress: fakeAddress('T'),
+        tokenAddress: fakeAddress('U'),
         rate: '0',
         balance: '0',
         withdrawn: '200',
@@ -249,6 +253,14 @@ describe('GET /v1/impact/:ngoId', () => {
     const body = response.json();
     expect(body.ngoId).toBe(ngo1.id);
     expect(body.totalCommitted).toBe('1200');
+    expect(body.committedByToken).toEqual([
+      { tokenAddress: fakeAddress('T'), amount: '1000' },
+      { tokenAddress: fakeAddress('U'), amount: '200' },
+    ]);
+    expect(body.platformCommittedByToken).toEqual([
+      { tokenAddress: fakeAddress('T'), amount: '1800' },
+      { tokenAddress: fakeAddress('U'), amount: '200' },
+    ]);
     expect(body.totalWithdrawn).toBe('600');
     expect(body.activeStreams).toBe(1);
     expect(body.cancelledStreams).toBe(1);

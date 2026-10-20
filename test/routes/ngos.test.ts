@@ -539,6 +539,10 @@ describe('GET /v1/ngos/:id', () => {
 
     const body = response.json();
     expect(body.stats.totalCommitted).toBe('1200');
+    expect(body.stats.committedByToken).toEqual([
+      { tokenAddress: fakeAddress('K'), amount: '1000' },
+      { tokenAddress: fakeAddress('L'), amount: '200' },
+    ]);
     expect(body.stats.totalWithdrawn).toBe('800');
     expect(body.stats.activeStreamCount).toBe(1);
     expect(body.stats.donorCount).toBe(2);
