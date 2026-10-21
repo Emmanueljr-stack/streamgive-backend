@@ -18,6 +18,7 @@ import { ngoRoutes } from './routes/ngos.js';
 import { streamRoutes } from './routes/streams.js';
 import { registerRequestIdHeader, requestIdOptions } from './requestId.js';
 import { registerCompression } from './plugins/compression.js';
+import { registerLogRetention } from './maintenance/logRetention.js';
 
 // pino-pretty runs its formatting on a separate worker thread; spawning
 // one per Fastify instance is fine for a single long-running process, but
@@ -338,6 +339,7 @@ export function buildServer(options?: BuildServerOptions) {
   app.register(impactRoutes, apiPrefix);
   app.register(ngoApplicationRoutes, apiPrefix);
   app.register(indexerStatusRoutes, apiPrefix);
+  registerLogRetention(app);
 
   return app;
 }
