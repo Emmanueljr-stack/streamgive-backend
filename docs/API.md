@@ -182,7 +182,12 @@ Lists verified and unverified NGOs.
 **Query params:** `address` (required): Stellar public key (`G` followed by
 55 base32 characters).
 
-Looks up an NGO profile by its owner address. Returns `400
+Looks up an NGO profile by its owner address. This endpoint is public and
+returns a profile whether or not the NGO is verified. This intentionally
+differs from `GET /v1/ngos`, which lists verified NGOs only. For an unverified
+or placeholder NGO, `verified` is `false`; `name` and approved-application
+fields (`description`, `website`, and `country`) can be `null`. The lookup
+does not expose pending application details. Returns `400
 {"error":"invalid_request"}` for an invalid address and `404
 {"error":"not_found"}` if there is no matching NGO. The response has the same
 shape as `GET /v1/ngos/{id}`; see that endpoint's example response.
@@ -192,7 +197,13 @@ shape as `GET /v1/ngos/{id}`; see that endpoint's example response.
 **Auth:** Public  
 **Path params:** `id` (required): NGO UUID.
 
-Returns an NGO profile, impact totals, and up to ten recent streams. Returns
+Returns an NGO profile, impact totals, and up to ten recent streams for
+verified, unverified, and placeholder NGOs. This public ID lookup is not a
+verification check: callers must inspect `verified` before treating an NGO as
+approved. Placeholder records can have `registered: false` and `name: null`;
+unverified records can have `verified: false` and `null` approved-application
+fields (`description`, `website`, and `country`). Pending application details
+remain private. Returns
 `400 {"error":"invalid_request"}` for an invalid ID or
 `404 {"error":"not_found"}` if no NGO exists.
 
