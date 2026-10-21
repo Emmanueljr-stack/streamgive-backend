@@ -5,6 +5,7 @@ import { prisma } from '../db.js';
 import { sendPublicCacheable } from './cacheable.js';
 import { requireAdminSignature } from '../middleware/adminAuth.js';
 import { getPublicNgoName } from './ngoName.js';
+import { committedTotalsByToken } from './tokenTotals.js';
 
 /** Params for NGO detail, donor, and admin update routes; `id` must be an NGO UUID. */
 const idParamSchema = z.object({ id: z.string().uuid() });
@@ -88,7 +89,7 @@ async function findNgoDetail(where: { id: string } | { ownerAddress: string }) {
     return null;
   }
 
-  const [approvedApp, streamStats, recentStreamRows] = await Promise.all([
+  const [approvedApp, streamStats, recentStreamRows, streamsForTokenTotals] = await Promise.all([
     prisma.ngoApplication.findFirst({
       where: { ownerAddress: ngo.ownerAddress, status: 'APPROVED' },
       orderBy: { updatedAt: 'desc' },
@@ -131,6 +132,10 @@ async function findNgoDetail(where: { id: string } | { ownerAddress: string }) {
         createdAt: true,
       },
     }),
+    prisma.stream.findMany({
+      where: { ngoId: ngo.id },
+      select: { status: true, balance: true, withdrawn: true, tokenAddress: true },
+    }),
   ]);
 
   const [stats] = streamStats;
@@ -146,6 +151,7 @@ async function findNgoDetail(where: { id: string } | { ownerAddress: string }) {
     country: approvedApp?.country ?? null,
     stats: {
       totalCommitted: stats.totalCommitted,
+      committedByToken: committedTotalsByToken(streamsForTokenTotals),
       totalWithdrawn: stats.totalWithdrawn,
       activeStreamCount: stats.activeStreamCount,
       donorCount: stats.donorCount,
@@ -317,7 +323,7 @@ export async function ngoRoutes(app: FastifyInstance): Promise<void> {
         address: true,
         streams: {
           where: { ngoId },
-          select: { status: true, balance: true, withdrawn: true },
+          select: { status: true, balance: true, withdrawn: true, tokenAddress: true },
         },
       },
     });
@@ -329,12 +335,13 @@ export async function ngoRoutes(app: FastifyInstance): Promise<void> {
       totalCommitted: streams
         .reduce((sum, stream) => sum + committedAmount(stream), 0n)
         .toString(),
+      committedByToken: committedTotalsByToken(streams),
     }));
 
-    return {
+    return sendPublicCacheable(request, reply, {
       donors,
       nextCursor: hasMore ? donors[donors.length - 1].id : null,
-    };
+    });
   });
 
   /**

@@ -23,6 +23,84 @@ describe('Global Error Handler', () => {
     await app.close();
   });
 
+  it('maps 400 status code to { error: "invalid_request" }', async () => {
+    const app = buildServer();
+
+    app.post('/test-400', async () => {
+      const err = new Error('Validation failed') as Error & { statusCode: number };
+      err.statusCode = 400;
+      throw err;
+    });
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/test-400',
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect(response.json()).toEqual({ error: 'invalid_request' });
+
+    await app.close();
+  });
+
+  it('maps 401 status code to { error: "internal_server_error" }', async () => {
+    const app = buildServer();
+
+    app.get('/test-401', async () => {
+      const err = new Error('Unauthorized') as Error & { statusCode: number };
+      err.statusCode = 401;
+      throw err;
+    });
+
+    const response = await app.inject({
+      method: 'GET',
+      url: '/test-401',
+    });
+
+    expect(response.statusCode).toBe(401);
+    expect(response.json()).toEqual({ error: 'internal_server_error' });
+
+    await app.close();
+  });
+
+  it('maps 404 status code from a known route to { error: "not_found" }', async () => {
+    const app = buildServer();
+
+    app.get('/test-404', async () => {
+      const err = new Error('Not found') as Error & { statusCode: number };
+      err.statusCode = 404;
+      throw err;
+    });
+
+    const response = await app.inject({
+      method: 'GET',
+      url: '/test-404',
+    });
+
+    expect(response.statusCode).toBe(404);
+    expect(response.json()).toEqual({ error: 'not_found' });
+
+    await app.close();
+  });
+
+  it('returns 404 for unknown routes with Fastify default error shape', async () => {
+    const app = buildServer();
+
+    const response = await app.inject({
+      method: 'GET',
+      url: '/this-route-does-not-exist',
+    });
+
+    expect(response.statusCode).toBe(404);
+    const body = response.json();
+    // Fastify's default 404 handler returns a different shape than our custom error handler
+    expect(body.statusCode).toBe(404);
+    expect(body.error).toBe('Not Found');
+    expect(body.message).toBe('Route GET:/this-route-does-not-exist not found');
+
+    await app.close();
+  });
+
   it('maps 413 status code to { error: "payload_too_large" }', async () => {
     const app = buildServer();
 

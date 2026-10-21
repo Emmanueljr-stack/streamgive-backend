@@ -1,3 +1,4 @@
+import { StrKey } from '@stellar/stellar-sdk';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { prisma } from '../../src/db.js';
@@ -129,6 +130,68 @@ describe('GET /v1/streams', () => {
     const response = await app.inject({ method: 'GET', url: '/v1/streams?token=not-a-contract' });
 
     expect(response.statusCode).toBe(400);
+    await app.close();
+  });
+
+  it('rejects a token with a valid shape but a bad checksum', async () => {
+    const app = buildServer();
+    const valid = fakeContractAddress('D');
+    // Same length and alphabet as a contract address, so a pattern check alone
+    // would accept it; only the checksum differs.
+    const corrupted = valid.slice(0, -1) + (valid.endsWith('A') ? 'B' : 'A');
+    expect(corrupted).toMatch(/^C[A-Z2-7]{55}$/);
+    expect(StrKey.isValidContract(corrupted)).toBe(false);
+
+    const response = await app.inject({ method: 'GET', url: `/v1/streams?token=${corrupted}` });
+
+    expect(response.statusCode).toBe(400);
+    expect(response.json().error).toBe('invalid_request');
+    expect(response.json().details.fieldErrors.token).toBeDefined();
+
+    await app.close();
+  });
+
+  it('accepts a checksum-valid contract address for token', async () => {
+    const app = buildServer();
+
+    const response = await app.inject({
+      method: 'GET',
+      url: `/v1/streams?token=${fakeContractAddress('D')}`,
+    });
+
+    expect(response.statusCode).toBe(200);
+
+    await app.close();
+  });
+
+  it('returns the same error body shape for every invalid query parameter', async () => {
+    const app = buildServer();
+    const valid = fakeContractAddress('D');
+    const badChecksum = valid.slice(0, -1) + (valid.endsWith('A') ? 'B' : 'A');
+    const cases: Record<string, string> = {
+      donor: 'donor=not-an-address',
+      ngoAddress: 'ngoAddress=not-an-address',
+      ngo: 'ngo=not-a-uuid',
+      cursor: 'cursor=not-a-uuid',
+      token: 'token=not-a-contract',
+      tokenBadChecksum: `token=${badChecksum}`,
+      status: 'status=DELETED',
+      limitTooLarge: 'limit=101',
+      limitZero: 'limit=0',
+      limitNotANumber: 'limit=abc',
+    };
+
+    for (const [name, query] of Object.entries(cases)) {
+      const response = await app.inject({ method: 'GET', url: `/v1/streams?${query}` });
+      const body = response.json();
+
+      expect(response.statusCode, name).toBe(400);
+      expect(body.error, name).toBe('invalid_request');
+      // One validator means one body: every failure carries zod's details.
+      expect(Object.keys(body).sort(), name).toEqual(['details', 'error']);
+      expect(body.details.fieldErrors, name).toBeDefined();
+    }
+
     await app.close();
   });
 
@@ -619,6 +682,42 @@ describe('GET /streams/:id/activity', () => {
       'TOP_UP',
     ]);
     expect(body.hasMore).toBe(false);
+
+    await app.close();
+  });
+
+  it('returns an ETag and 304 for a matching If-None-Match header', async () => {
+    const app = buildServer();
+    const donor = await prisma.donor.create({ data: { address: fakeAddress('A') } });
+    const ngo = await prisma.ngo.create({
+      data: { ownerAddress: fakeAddress('B'), name: 'NGO', verified: true },
+    });
+    const stream = await prisma.stream.create({
+      data: {
+        onChainId: 1n,
+        donorId: donor.id,
+        ngoId: ngo.id,
+        tokenAddress: fakeAddress('D'),
+        rate: '1',
+        balance: '100',
+        withdrawn: '0',
+      },
+    });
+    const url = `/streams/${stream.id}/activity`;
+
+    const first = await app.inject({ method: 'GET', url });
+    const etag = first.headers.etag;
+    expect(etag).toBeDefined();
+    expect(first.headers['cache-control']).toContain('max-age=30');
+
+    const cached = await app.inject({
+      method: 'GET',
+      url,
+      headers: { 'if-none-match': String(etag) },
+    });
+    expect(cached.statusCode).toBe(304);
+    expect(cached.body).toBe('');
+    expect(cached.headers.etag).toBe(etag);
 
     await app.close();
   });
