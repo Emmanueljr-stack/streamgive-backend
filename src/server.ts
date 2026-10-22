@@ -1,3 +1,5 @@
+import { timingSafeEqual } from 'node:crypto';
+
 import cors from '@fastify/cors';
 import helmet from '@fastify/helmet';
 import rateLimit from '@fastify/rate-limit';
@@ -24,6 +26,25 @@ import { registerCompression } from './plugins/compression.js';
 // the test suite calls buildServer() dozens of times, so it's skipped for
 // NODE_ENV=test (which Vitest sets by default) as well as production.
 const USE_PRETTY_LOGS = !['production', 'test'].includes(process.env.NODE_ENV ?? '');
+
+/**
+ * Compares the bearer token in constant time so response timing cannot be
+ * used to discover METRICS_TOKEN one character at a time.
+ */
+function hasValidBearerToken(header: string | undefined, expectedToken: string): boolean {
+  if (header === undefined) {
+    return false;
+  }
+
+  const match = /^Bearer\s+(.+)$/i.exec(header.trim());
+  if (match === null) {
+    return false;
+  }
+
+  const provided = Buffer.from(match[1]);
+  const expected = Buffer.from(expectedToken);
+  return provided.length === expected.length && timingSafeEqual(provided, expected);
+}
 
 export type TrustProxySetting =
   boolean | string | string[] | ((address: string, hop: number) => boolean);
@@ -129,6 +150,13 @@ export function buildServer(options?: BuildServerOptions) {
     reply.code(statusCode).send({ error: errorString });
   });
 
+  // Fastify's default 404 body is `{ message, error, statusCode }`, while
+  // every route-level 404 in this API returns `{ error: 'not_found' }`.
+  // Clients should only need one parser, so use the same shape here.
+  app.setNotFoundHandler((_request, reply) => {
+    return reply.code(404).send({ error: 'not_found' });
+  });
+
   // Register helmet for security headers
   app.register(helmet, {
     contentSecurityPolicy: false, // Disabled for API-only server
@@ -158,7 +186,17 @@ export function buildServer(options?: BuildServerOptions) {
       'x-admin-timestamp',
       'x-request-id',
     ],
-    exposedHeaders: ['x-request-id'],
+    // Access-Control-Expose-Headers: without these, a browser on another
+    // origin cannot read the limiter's headers even though the response
+    // carries them. `Retry-After` is the machine-readable backoff contract;
+    // the x-ratelimit-* headers show the remaining budget.
+    exposedHeaders: [
+      'x-request-id',
+      'retry-after',
+      'x-ratelimit-limit',
+      'x-ratelimit-remaining',
+      'x-ratelimit-reset',
+    ],
   });
 
   app.register(rateLimit, {
@@ -194,13 +232,36 @@ export function buildServer(options?: BuildServerOptions) {
 
   /**
    * Exposes process-local Prometheus metrics.
+   *
+   * When METRICS_TOKEN is set, the endpoint requires a matching
+   * `Authorization: Bearer <token>` header so operators can protect it
+   * without a network-level rule. When it is unset the endpoint stays public.
+   *
    * @route GET /metrics
-   * @auth Public
-   * @returns 200 Prometheus text format (`text/plain; version=0.0.4`).
+   * @auth Public, or bearer token when METRICS_TOKEN is set
+   * @returns 200 Prometheus text format (`text/plain; version=0.0.4`); 401 `{ error: "unauthorized" }` when the token is missing or wrong.
    */
-  app.get('/metrics', async (_request, reply) => {
-    return reply.type('text/plain; version=0.0.4; charset=utf-8').send(renderMetrics());
-  });
+  app.get(
+    '/metrics',
+    {
+      onRequest: async (request, reply) => {
+        const token = process.env.METRICS_TOKEN?.trim();
+        if (!token) {
+          return;
+        }
+
+        if (!hasValidBearerToken(request.headers.authorization, token)) {
+          return reply
+            .code(401)
+            .header('www-authenticate', 'Bearer')
+            .send({ error: 'unauthorized' });
+        }
+      },
+    },
+    async (_request, reply) => {
+      return reply.type('text/plain; version=0.0.4; charset=utf-8').send(renderMetrics());
+    },
+  );
 
   app.register(swagger, {
     openapi: {

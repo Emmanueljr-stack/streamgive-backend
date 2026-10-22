@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('../src/routes/ngoApplications.js', () => ({
   ngoApplicationRoutes: async () => {},
@@ -13,6 +13,20 @@ import {
 } from '../src/metrics.js';
 
 describe('GET /metrics', () => {
+  const originalMetricsToken = process.env.METRICS_TOKEN;
+
+  beforeEach(() => {
+    delete process.env.METRICS_TOKEN;
+  });
+
+  afterEach(() => {
+    if (originalMetricsToken === undefined) {
+      delete process.env.METRICS_TOKEN;
+    } else {
+      process.env.METRICS_TOKEN = originalMetricsToken;
+    }
+  });
+
   it('returns Prometheus text with HTTP and indexer metrics', async () => {
     const app = buildServer();
 
@@ -55,5 +69,34 @@ describe('GET /metrics', () => {
     expect(value(after, 'streamgive_indexer_events_skipped_total')).toBe(
       value(before, 'streamgive_indexer_events_skipped_total') + 1,
     );
+  });
+
+  it('requires the configured bearer token on /metrics', async () => {
+    process.env.METRICS_TOKEN = 'metrics-secret';
+    const app = buildServer();
+
+    const missing = await app.inject({ method: 'GET', url: '/metrics' });
+    expect(missing.statusCode).toBe(401);
+    expect(missing.json()).toEqual({ error: 'unauthorized' });
+    expect(missing.headers['www-authenticate']).toContain('Bearer');
+
+    const wrong = await app.inject({
+      method: 'GET',
+      url: '/metrics',
+      headers: { authorization: 'Bearer not-the-secret' },
+    });
+    expect(wrong.statusCode).toBe(401);
+    expect(wrong.json()).toEqual({ error: 'unauthorized' });
+
+    const correct = await app.inject({
+      method: 'GET',
+      url: '/metrics',
+      headers: { authorization: 'Bearer metrics-secret' },
+    });
+    expect(correct.statusCode).toBe(200);
+    expect(correct.headers['content-type']).toContain('text/plain');
+    expect(correct.body).toContain('# TYPE streamgive_http_requests_total counter');
+
+    await app.close();
   });
 });

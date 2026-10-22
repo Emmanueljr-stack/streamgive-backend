@@ -30,6 +30,9 @@ Routes marked **Public** do not require authentication. Public directory,
 stream, and impact endpoints may return `304 Not Modified` when the
 `If-None-Match` header matches their ETag.
 
+Unknown routes return `404` with the same body used by every other missing
+resource: `{"error":"not_found"}`.
+
 ## Integer and amount representation
 
 Stream `onChainId` values are stored as JavaScript `bigint` values in the
@@ -82,8 +85,14 @@ unavailable.
 
 ### `GET /metrics`
 
-**Auth:** Public  
+**Auth:** Public, or bearer token when `METRICS_TOKEN` is set
+
 **Params:** None.
+
+If the server has `METRICS_TOKEN` set, this endpoint requires
+`Authorization: Bearer <token>`. A missing or wrong token returns
+`401 { "error": "unauthorized" }`. When `METRICS_TOKEN` is unset, the
+endpoint is public.
 
 Returns Prometheus exposition text (`text/plain; version=0.0.4`), including
 HTTP request and duration metrics, indexer checkpoint and lag, and webhook
