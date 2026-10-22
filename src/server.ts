@@ -224,38 +224,65 @@ export function buildServer(options?: BuildServerOptions) {
   }
 
   /**
-   * Checks database and Stellar RPC availability.
+   * Races a promise against a timeout.  Rejects with a TimeoutError when the
+   * deadline is reached so callers can treat it the same as any other failure.
+   */
+  function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
+    return new Promise<T>((resolve, reject) => {
+      const timer = setTimeout(
+        () => reject(new Error(`health check timed out after ${ms} ms`)),
+        ms,
+      );
+      promise.then(
+        (v) => { clearTimeout(timer); resolve(v); },
+        (e) => { clearTimeout(timer); reject(e); },
+      );
+    });
+  }
+
+  const HEALTH_CHECK_TIMEOUT_MS = parseInt(
+    process.env.HEALTH_CHECK_TIMEOUT_MS ?? '3000',
+    10,
+  );
+
+  /**
+   * Liveness probe — only checks the database so that an RPC outage does not
+   * cause the platform to restart a healthy API process.  The check is
+   * time-boxed so a slow database is reported as degraded rather than
+   * hanging the probe indefinitely.
+   *
    * @route GET /health
    * @auth Public
-   * @returns 200 or 503 `{ status: "ok" | "error", db: "ok" | "error", rpc: "ok" | "error" }`.
+   * @returns 200 `{ status: "ok", db: "ok" }` or
+   *          503 `{ status: "error", db: "error" }`.
    */
   app.get('/health', async (_req, reply) => {
-    const [dbResult, rpcResult] = await Promise.allSettled([
-      prisma.$queryRaw`SELECT 1`,
-      getLatestLedgerSequence(),
+    const dbResult = await Promise.allSettled([
+      withTimeout(prisma.$queryRaw`SELECT 1`, HEALTH_CHECK_TIMEOUT_MS),
     ]);
 
-    const db = dbResult.status === 'fulfilled' ? 'ok' : 'error';
-    const rpc = rpcResult.status === 'fulfilled' ? 'ok' : 'error';
-
-      const status = db === 'ok' && rpc === 'ok' ? 'ok' : 'error';
-      return reply.code(status === 'ok' ? 200 : 503).send({ status, db, rpc });
+    const db = dbResult[0].status === 'fulfilled' ? 'ok' : 'error';
+    const status = db === 'ok' ? 'ok' : 'error';
+    return reply.code(status === 'ok' ? 200 : 503).send({ status, db });
   });
 
   /**
-   * Checks readiness, including database availability and indexer lag.
+   * Readiness probe — checks the database, the Stellar RPC node, and indexer
+   * lag.  Each remote call is time-boxed so a slow dependency is reported as
+   * degraded rather than hanging the probe indefinitely.
+   *
    * @route GET /health/ready
    * @auth Public
    * @returns 200 `{ status: "ok", lag, latestLedger, checkpointLedger }`; 503 `{ status: "error", reason, ... }` when unavailable or not caught up.
    */
   app.get('/health/ready', async (request, reply) => {
     try {
-      // 1. Check DB
-      await prisma.$queryRaw`SELECT 1`;
+      // 1. Check DB (time-boxed)
+      await withTimeout(prisma.$queryRaw`SELECT 1`, HEALTH_CHECK_TIMEOUT_MS);
 
-      // 2. Get RPC and Indexer info
+      // 2. Get RPC and Indexer info (both time-boxed)
       const [latestLedger, checkpointLedger] = await Promise.all([
-        getLatestLedgerSequence(),
+        withTimeout(getLatestLedgerSequence(), HEALTH_CHECK_TIMEOUT_MS),
         getCheckpoint(),
       ]);
 
