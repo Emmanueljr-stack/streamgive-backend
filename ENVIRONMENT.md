@@ -52,6 +52,7 @@ Admin requests are authenticated with a signed timestamp header. The timestamp *
 | `RATE_LIMIT_APPLICATION_MAX`    | No       | `5`                                      | Maximum number of NGO application submissions allowed per time window.                         |
 | `RATE_LIMIT_APPLICATION_WINDOW`| No       | `1 minute`                               | Rate limit time window for NGO application submissions.                                         |
 | `TRUST_PROXY`                   | No       | `true`                                   | Controls Fastify `trustProxy` setting to read client IP from `X-Forwarded-For`. Behind reverse proxies like Render, this ensures rate limiting keys by individual client IP rather than the proxy IP. Accepts `true` (default), `false`, a bounded hop count (e.g. `1`), or a comma-separated list of trusted IPs/CIDRs. |
+| `METRICS_TOKEN`                 | No       | — (empty)                                | If set, `GET /metrics` requires `Authorization: Bearer <token>`; missing or wrong tokens get `401 { "error": "unauthorized" }`. Unset leaves `/metrics` public. |
 | `LOG_LEVEL`                     | No       | `info`                                   | Pino log level: `fatal` \| `error` \| `warn` \| `info` \| `debug` \| `trace`.                     |
 | `NODE_ENV`                      | No       | unset (treated as development)           | Set to `production` to switch logging to structured JSON instead of pino-pretty. Set automatically inside the Docker image. |
 
