@@ -1,16 +1,20 @@
 import type { FastifyInstance } from 'fastify';
+import { randomUUID } from 'node:crypto';
+import { Keypair, StrKey } from '@stellar/stellar-sdk';
 import { z } from 'zod';
 
 import { prisma } from '../db.js';
-import { requireAdminSignature } from '../middleware/adminAuth.js';
+import { requireAdminSignature, sep53Hash } from '../middleware/adminAuth.js';
 import { notify } from '../notifications/service.js';
+
+const APPLICATION_CHALLENGE_TTL_MS = 5 * 60 * 1000;
 
 /**
  * Submission body: `ownerAddress` must be a Stellar G... public key;
  * `name` and `description` are required (1–200 and 1–5000 characters);
  * `contactEmail` is a required email; optional `website` is normalized to
  * HTTPS when scheme-less and must be a URL; optional `country` is at most
- * 100 characters.
+ * 100 characters. `challenge` and `signature` prove control of ownerAddress.
  */
 const applicationSchema = z.object({
   ownerAddress: z.string().regex(/^G[A-Z2-7]{55}$/),
@@ -27,15 +31,57 @@ const applicationSchema = z.object({
   country: z.string().max(100).optional(),
 });
 
+const applicationSubmissionSchema = applicationSchema.extend({
+  challenge: z.string().uuid(),
+  signature: z.string().min(1),
+});
+
+const challengeRequestSchema = z.object({
+  ownerAddress: z.string().regex(/^G[A-Z2-7]{55}$/),
+});
+
+function applicationChallengeMessage(ownerAddress: string, challenge: string, expiresAt: Date) {
+  return [
+    'StreamGive NGO application address verification',
+    `Owner address: ${ownerAddress}`,
+    `Challenge: ${challenge}`,
+    `Expires at: ${expiresAt.toISOString()}`,
+  ].join('\n');
+}
+
+function verifyApplicationSignature(
+  ownerAddress: string,
+  message: string,
+  signature: string,
+): boolean {
+  try {
+    if (!StrKey.isValidEd25519PublicKey(ownerAddress)) return false;
+    const keypair = Keypair.fromPublicKey(ownerAddress);
+    const candidates = [Buffer.from(signature, 'base64'), Buffer.from(signature, 'hex')];
+    return candidates.some(
+      (candidate) => candidate.length === 64 && keypair.verify(sep53Hash(message), candidate),
+    );
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Largest `offset` the admin list accepts. The database scans and discards
+ * `offset` rows on every page, so an unbounded value lets one request force a
+ * scan of the whole table. Requests above this are rejected with 400.
+ */
+export const MAX_APPLICATION_LIST_OFFSET = 10_000;
+
 /**
  * Query for the admin list: optional status (`PENDING`, `APPROVED`, or
- * `REJECTED`), `limit` from 1–100 (default 100), and non-negative `offset`
- * (default 0).
+ * `REJECTED`), `limit` from 1–100 (default 100), and `offset` from
+ * 0–`MAX_APPLICATION_LIST_OFFSET` (default 0).
  */
 const listQuerySchema = z.object({
   status: z.enum(['PENDING', 'APPROVED', 'REJECTED']).optional(),
   limit: z.coerce.number().int().min(1).max(100).default(100),
-  offset: z.coerce.number().int().min(0).default(0),
+  offset: z.coerce.number().int().min(0).max(MAX_APPLICATION_LIST_OFFSET).default(0),
 });
 
 /** Params for application detail and review routes; `id` must be an application UUID. */
@@ -98,11 +144,39 @@ async function createApplicationUnlessBlocked(data: z.infer<typeof applicationSc
 
 export async function ngoApplicationRoutes(app: FastifyInstance): Promise<void> {
   /**
+   * Issues a short-lived challenge that must be signed by the NGO owner address.
+   * @route POST /v1/ngo-applications/challenge
+   * @body `{ ownerAddress }`
+   * @returns 201 `{ challenge, message, expiresAt }`.
+   */
+  app.post('/ngo-applications/challenge', async (request, reply) => {
+    const parsed = challengeRequestSchema.safeParse(request.body);
+    if (!parsed.success) {
+      return reply.code(400).send({ error: 'invalid_request', details: parsed.error.flatten() });
+    }
+    if (!StrKey.isValidEd25519PublicKey(parsed.data.ownerAddress)) {
+      return reply.code(400).send({ error: 'invalid_request' });
+    }
+
+    const challenge = randomUUID();
+    const expiresAt = new Date(Date.now() + APPLICATION_CHALLENGE_TTL_MS);
+    const message = applicationChallengeMessage(parsed.data.ownerAddress, challenge, expiresAt);
+    await prisma.ngoApplicationChallenge.deleteMany({
+      where: { expiresAt: { lte: new Date() } },
+    });
+    await prisma.ngoApplicationChallenge.create({
+      data: { challenge, ownerAddress: parsed.data.ownerAddress, expiresAt },
+    });
+
+    return reply.code(201).send({ challenge, message, expiresAt });
+  });
+
+  /**
    * Submits a public NGO verification application.
    * @route POST /v1/ngo-applications
-   * @body applicationSchema
+   * @body applicationSchema plus a server-issued `challenge` and SEP-53 `signature`
    * @auth Public
-   * @returns 201 created application; 400 `{ error: "invalid_request", details }`; 409 `{ error: "already_approved" | "application_already_pending" }`.
+   * @returns 201 created application; 400 invalid request or signature; 409 `{ error: "already_approved" | "application_already_pending" }`.
    */
   app.post(
     '/ngo-applications',
@@ -117,12 +191,44 @@ export async function ngoApplicationRoutes(app: FastifyInstance): Promise<void> 
       },
     },
     async (request, reply) => {
-      const parsed = applicationSchema.safeParse(request.body);
+      const parsed = applicationSubmissionSchema.safeParse(request.body);
       if (!parsed.success) {
         return reply.code(400).send({ error: 'invalid_request', details: parsed.error.flatten() });
       }
 
-      const result = await createApplicationUnlessBlocked(parsed.data);
+      const { challenge, signature, ...applicationData } = parsed.data;
+      const challengeRecord = await prisma.ngoApplicationChallenge.findUnique({
+        where: { challenge },
+      });
+      if (
+        !challengeRecord ||
+        challengeRecord.ownerAddress !== applicationData.ownerAddress ||
+        challengeRecord.expiresAt.getTime() <= Date.now()
+      ) {
+        return reply.code(400).send({ error: 'invalid_or_expired_challenge' });
+      }
+
+      const message = applicationChallengeMessage(
+        challengeRecord.ownerAddress,
+        challenge,
+        challengeRecord.expiresAt,
+      );
+      if (!verifyApplicationSignature(applicationData.ownerAddress, message, signature)) {
+        return reply.code(401).send({ error: 'invalid_signature' });
+      }
+
+      const consumed = await prisma.ngoApplicationChallenge.deleteMany({
+        where: {
+          challenge,
+          ownerAddress: applicationData.ownerAddress,
+          expiresAt: { gt: new Date() },
+        },
+      });
+      if (consumed.count !== 1) {
+        return reply.code(400).send({ error: 'invalid_or_expired_challenge' });
+      }
+
+      const result = await createApplicationUnlessBlocked(applicationData);
       if (!result.ok) {
         if (result.status === 'APPROVED') {
           return reply.code(409).send({ error: 'already_approved' });
@@ -142,15 +248,16 @@ export async function ngoApplicationRoutes(app: FastifyInstance): Promise<void> 
 
   // Public read endpoint: an applicant can check their own review status
   // without an admin signature. Deliberately returns only the review
-  // outcome and timestamps — never the contact details or description
-  // submitted with the application, since anyone who knows (or guesses) an
-  // address could otherwise read them.
+  // outcome, timestamps, and (after review) the review note — never contact
+  // details or the description submitted with the application, since anyone
+  // who knows (or guesses) an address could otherwise read them.
   /**
    * Returns the latest application status without exposing submitted details.
    * @route GET /v1/ngo-applications/status
    * @query ownerAddress Stellar public key
    * @auth Public
-   * @returns 200 `{ status, createdAt, updatedAt }`; 400 invalid address; 404 `{ error: "not_found" }`.
+   * @returns 200 `{ status, createdAt, updatedAt, reviewNote? }`; the note
+   * is returned after review. 400 invalid address; 404 `{ error: "not_found" }`.
    */
   app.get(
     '/ngo-applications/status',
@@ -158,7 +265,8 @@ export async function ngoApplicationRoutes(app: FastifyInstance): Promise<void> 
       schema: {
         tags: ['NGOs'],
         summary: 'Check an NGO application status',
-        description: 'Returns only the status and timestamps for the supplied owner address.',
+        description:
+          'Returns the status and timestamps, plus the review note after review, for the supplied owner address.',
         querystring: {
           type: 'object',
           properties: { ownerAddress: { type: 'string', pattern: '^G[A-Z2-7]{55}$' } },
@@ -181,12 +289,19 @@ export async function ngoApplicationRoutes(app: FastifyInstance): Promise<void> 
       const application = await prisma.ngoApplication.findFirst({
         where: { ownerAddress: parsed.data.ownerAddress },
         orderBy: { createdAt: 'desc' },
-        select: { status: true, createdAt: true, updatedAt: true },
+        select: { status: true, createdAt: true, updatedAt: true, reviewNote: true },
       });
       if (!application) {
         return reply.code(404).send({ error: 'not_found' });
       }
 
+      if (application.status === 'PENDING') {
+        return {
+          status: application.status,
+          createdAt: application.createdAt,
+          updatedAt: application.updatedAt,
+        };
+      }
       return application;
     },
   );
@@ -222,10 +337,13 @@ export async function ngoApplicationRoutes(app: FastifyInstance): Promise<void> 
 
   /**
    * Lists applications newest first with optional status and offset pagination.
+   * Rows are ordered by `createdAt` then `id` (both descending), so applications
+   * created at the same instant keep a fixed position and offset pages never
+   * repeat or skip a row.
    * @route GET /v1/ngo-applications
    * @query status, limit, offset
    * @auth Admin signature required via `x-admin-address`, `x-admin-timestamp`, and `x-admin-signature`.
-   * @returns 200 `{ applications: Application[], total, limit, offset }`; 400 `{ error: "invalid_request", details }`.
+   * @returns 200 `{ applications: Application[], total, limit, offset }`; 400 `{ error: "invalid_request", details }` (including `offset` above `MAX_APPLICATION_LIST_OFFSET`).
    */
   app.get('/ngo-applications', { preHandler: requireAdminSignature }, async (request, reply) => {
     const parsed = listQuerySchema.safeParse(request.query);
@@ -238,7 +356,7 @@ export async function ngoApplicationRoutes(app: FastifyInstance): Promise<void> 
     const [applications, total] = await Promise.all([
       prisma.ngoApplication.findMany({
         where,
-        orderBy: { createdAt: 'desc' },
+        orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
         take: parsed.data.limit,
         skip: parsed.data.offset,
       }),
@@ -287,6 +405,11 @@ export async function ngoApplicationRoutes(app: FastifyInstance): Promise<void> 
     '/ngo-applications/:id/approve',
     { preHandler: requireAdminSignature },
     async (request, reply) => {
+      const reviewedBy = request.headers['x-admin-address'];
+      if (typeof reviewedBy !== 'string') {
+        return reply.code(401).send({ error: 'unauthorized' });
+      }
+
       const parsedParams = idParamSchema.safeParse(request.params);
       if (!parsedParams.success) {
         return reply.code(400).send({ error: 'invalid_request' });
@@ -309,7 +432,12 @@ export async function ngoApplicationRoutes(app: FastifyInstance): Promise<void> 
       try {
         const reviewed = await prisma.ngoApplication.update({
           where: { id, status: 'PENDING' },
-          data: { status: 'APPROVED', reviewNote: parsed.data?.reviewNote },
+          data: {
+            status: 'APPROVED',
+            reviewNote: parsed.data?.reviewNote,
+            reviewedBy,
+            reviewedAt: new Date(),
+          },
         });
         await notify({
           type: 'application_reviewed',
@@ -344,6 +472,11 @@ export async function ngoApplicationRoutes(app: FastifyInstance): Promise<void> 
     '/ngo-applications/:id/reject',
     { preHandler: requireAdminSignature },
     async (request, reply) => {
+      const reviewedBy = request.headers['x-admin-address'];
+      if (typeof reviewedBy !== 'string') {
+        return reply.code(401).send({ error: 'unauthorized' });
+      }
+
       const parsedParams = idParamSchema.safeParse(request.params);
       if (!parsedParams.success) {
         return reply.code(400).send({ error: 'invalid_request' });
@@ -366,7 +499,12 @@ export async function ngoApplicationRoutes(app: FastifyInstance): Promise<void> 
       try {
         const reviewed = await prisma.ngoApplication.update({
           where: { id, status: 'PENDING' },
-          data: { status: 'REJECTED', reviewNote: parsed.data?.reviewNote },
+          data: {
+            status: 'REJECTED',
+            reviewNote: parsed.data?.reviewNote,
+            reviewedBy,
+            reviewedAt: new Date(),
+          },
         });
         await notify({
           type: 'application_reviewed',

@@ -2,6 +2,8 @@ import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 
 import { prisma } from '../db.js';
+import { sendPublicCacheable } from './cacheable.js';
+import { committedTotalsByToken } from './tokenTotals.js';
 
 /**
  * Query for GET /v1/donors: `sort` is committed or withdrawn (default
@@ -40,7 +42,7 @@ export async function donorRoutes(app: FastifyInstance): Promise<void> {
     const { sort, order, limit, cursor } = parsedQuery.data;
     const rows = await prisma.donor.findMany({
       include: {
-        streams: { select: { balance: true, withdrawn: true, status: true } },
+        streams: { select: { balance: true, withdrawn: true, status: true, tokenAddress: true } },
       },
     });
 
@@ -56,6 +58,7 @@ export async function donorRoutes(app: FastifyInstance): Promise<void> {
             0n,
           )
           .toString(),
+        committedByToken: committedTotalsByToken(streams),
         totalWithdrawn: streams
           .reduce((sum, stream) => sum + BigInt(stream.withdrawn), 0n)
           .toString(),
@@ -81,10 +84,10 @@ export async function donorRoutes(app: FastifyInstance): Promise<void> {
     const hasMore = page.length > limit;
     const donors = hasMore ? page.slice(0, limit) : page;
 
-    return {
+    return sendPublicCacheable(request, reply, {
       donors,
       nextCursor: hasMore ? donors[donors.length - 1].id : null,
-    };
+    });
   });
 
   // Per-donor summary so the dashboard (and other clients) can show donor
@@ -106,7 +109,13 @@ export async function donorRoutes(app: FastifyInstance): Promise<void> {
       where: { address: parsedParams.data.address },
       include: {
         streams: {
-          select: { ngoId: true, balance: true, withdrawn: true, status: true },
+          select: {
+            ngoId: true,
+            balance: true,
+            withdrawn: true,
+            status: true,
+            tokenAddress: true,
+          },
         },
       },
     });
@@ -132,12 +141,112 @@ export async function donorRoutes(app: FastifyInstance): Promise<void> {
       .reduce((sum, stream) => sum + BigInt(stream.withdrawn), 0n)
       .toString();
 
-    return {
+    return sendPublicCacheable(request, reply, {
       ...rest,
       totalCommitted,
+      committedByToken: committedTotalsByToken(streams),
       totalWithdrawn,
       activeStreamCount: streams.filter((stream) => stream.status === 'ACTIVE').length,
       distinctNgoCount: new Set(streams.map((stream) => stream.ngoId)).size,
-    };
+    });
+  });
+
+  /**
+   * Helper to escape a value for CSV with RFC 4180 rules and formula injection protection.
+   */
+  function escapeCsvField(value: unknown): string {
+    if (value === null || value === undefined) {
+      return '';
+    }
+    let str = String(value);
+    // Formula-safe: if string starts with dangerous characters, prefix with single quote
+    if (/^[=+\-@\t\r]/.test(str)) {
+      str = `'${str}`;
+    }
+    // If field contains quotes, commas, or newlines, wrap in quotes and escape internal quotes
+    if (str.includes('"') || str.includes(',') || str.includes('\n') || str.includes('\r')) {
+      return `"${str.replace(/"/g, '""')}"`;
+    }
+    return str;
+  }
+
+  /**
+   * Exports all streams for a donor as a CSV file with formula-safe fields.
+   * @route GET /v1/donors/:address/streams.csv
+   * @param address Stellar public key
+   * @auth Public
+   * @returns 200 CSV stream; 400 invalid address; 404 `{ error: "not_found" }`.
+   */
+  app.get('/donors/:address/streams.csv', async (request, reply) => {
+    const parsedParams = addressParamSchema.safeParse(request.params);
+    if (!parsedParams.success) {
+      return reply.code(400).send({ error: 'invalid_request' });
+    }
+
+    const donor = await prisma.donor.findUnique({
+      where: { address: parsedParams.data.address },
+    });
+
+    if (!donor) {
+      return reply.code(404).send({ error: 'not_found' });
+    }
+
+    const streams = await prisma.stream.findMany({
+      where: { donorId: donor.id },
+      orderBy: { createdAt: 'desc' },
+      include: {
+        ngo: { select: { id: true, name: true, displayName: true, ownerAddress: true } },
+      },
+    });
+
+    const headers = [
+      'id',
+      'onChainId',
+      'ngoId',
+      'ngoName',
+      'ngoAddress',
+      'tokenAddress',
+      'rate',
+      'lastRate',
+      'balance',
+      'withdrawn',
+      'status',
+      'createdTxHash',
+      'createdAt',
+      'updatedAt',
+    ];
+
+    const rows = streams.map((stream) => {
+      const ngoName = stream.ngo.displayName || stream.ngo.name || '';
+      return [
+        stream.id,
+        stream.onChainId.toString(),
+        stream.ngoId,
+        ngoName,
+        stream.ngo.ownerAddress,
+        stream.tokenAddress,
+        stream.rate,
+        stream.lastRate ?? '',
+        stream.balance,
+        stream.withdrawn,
+        stream.status,
+        stream.createdTxHash ?? '',
+        stream.createdAt.toISOString(),
+        stream.updatedAt.toISOString(),
+      ];
+    });
+
+    const csvContent = [
+      headers.map(escapeCsvField).join(','),
+      ...rows.map((row) => row.map(escapeCsvField).join(',')),
+    ].join('\r\n');
+
+    reply.header('content-type', 'text/csv; charset=utf-8');
+    reply.header(
+      'content-disposition',
+      `attachment; filename="donor-${parsedParams.data.address}-streams.csv"`,
+    );
+
+    return reply.send(csvContent ? `${csvContent}\r\n` : '');
   });
 }

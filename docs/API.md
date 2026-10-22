@@ -30,6 +30,9 @@ Routes marked **Public** do not require authentication. Public directory,
 stream, and impact endpoints may return `304 Not Modified` when the
 `If-None-Match` header matches their ETag.
 
+Unknown routes return `404` with the same body used by every other missing
+resource: `{"error":"not_found"}`.
+
 ## Integer and amount representation
 
 Stream `onChainId` values are stored as JavaScript `bigint` values in the
@@ -82,8 +85,14 @@ unavailable.
 
 ### `GET /metrics`
 
-**Auth:** Public  
+**Auth:** Public, or bearer token when `METRICS_TOKEN` is set
+
 **Params:** None.
+
+If the server has `METRICS_TOKEN` set, this endpoint requires
+`Authorization: Bearer <token>`. A missing or wrong token returns
+`401 { "error": "unauthorized" }`. When `METRICS_TOKEN` is unset, the
+endpoint is public.
 
 Returns Prometheus exposition text (`text/plain; version=0.0.4`), including
 HTTP request and duration metrics, indexer checkpoint and lag, and webhook
@@ -211,6 +220,9 @@ Returns an NGO profile, impact totals, and up to ten recent streams. Returns
   "country": "Example",
   "stats": {
     "totalCommitted": "12000",
+    "committedByToken": [
+      { "tokenAddress": "<STELLAR_CONTRACT_ADDRESS>", "amount": "12000" }
+    ],
     "totalWithdrawn": "2000",
     "activeStreamCount": 2,
     "donorCount": 3
@@ -243,9 +255,12 @@ is set; `registered` indicates whether an on-chain registry name exists.
 **Query params:** `limit` (integer, 1–100, default `100`) and `cursor` (donor
 UUID, optional).
 
-Lists donors with streams for this NGO. Each donor's `totalCommitted` is a
-decimal string. Returns `400 {"error":"invalid_request"}` for invalid
+Lists donors with streams for this NGO. `committedByToken` reports each
+token's committed amount separately; `totalCommitted` remains as a legacy
+decimal-string field. Returns `400 {"error":"invalid_request"}` for invalid
 parameters and `404 {"error":"not_found"}` if the NGO does not exist.
+Responses include an `ETag` and `Cache-Control` with a 30-second public
+max-age; send `If-None-Match` to receive `304 Not Modified` when unchanged.
 
 ```json
 {
@@ -253,7 +268,10 @@ parameters and `404 {"error":"not_found"}` if the NGO does not exist.
     {
       "id": "<UUID>",
       "address": "<STELLAR_PUBLIC_KEY>",
-      "totalCommitted": "1200"
+      "totalCommitted": "1200",
+      "committedByToken": [
+        { "tokenAddress": "<STELLAR_CONTRACT_ADDRESS>", "amount": "1200" }
+      ]
     }
   ],
   "nextCursor": null
@@ -298,6 +316,11 @@ set to the display name when present, otherwise its registered name. Returns
 | `cursor` | UUID | — | Continue after this donor ID. |
 
 Returns donor totals across all streams.
+Each donor includes `committedByToken`, an array of `{ tokenAddress, amount }`
+entries, so committed amounts in different assets are reported independently.
+The legacy `totalCommitted` field remains available.
+Responses include an `ETag` and `Cache-Control` with a 30-second public
+max-age; send `If-None-Match` to receive `304 Not Modified` when unchanged.
 
 ```json
 {
@@ -307,6 +330,9 @@ Returns donor totals across all streams.
       "address": "<STELLAR_PUBLIC_KEY>",
       "createdAt": "<ISO-8601>",
       "totalCommitted": "1200",
+      "committedByToken": [
+        { "tokenAddress": "<STELLAR_CONTRACT_ADDRESS>", "amount": "1200" }
+      ],
       "totalWithdrawn": "200"
     }
   ],
@@ -324,6 +350,10 @@ Invalid query parameters or an unknown cursor return
 55 base32 characters).
 
 Returns one donor's totals, number of active streams, and distinct NGO count.
+`committedByToken` reports committed amounts separately for each token; the
+legacy `totalCommitted` field remains available.
+Responses include an `ETag` and `Cache-Control` with a 30-second public
+max-age; send `If-None-Match` to receive `304 Not Modified` when unchanged.
 Returns `400 {"error":"invalid_request"}` for an invalid address and
 `404 {"error":"not_found"}` if no donor exists.
 
@@ -333,6 +363,9 @@ Returns `400 {"error":"invalid_request"}` for an invalid address and
   "address": "<STELLAR_PUBLIC_KEY>",
   "createdAt": "<ISO-8601>",
   "totalCommitted": "1200",
+  "committedByToken": [
+    { "tokenAddress": "<STELLAR_CONTRACT_ADDRESS>", "amount": "1200" }
+  ],
   "totalWithdrawn": "200",
   "activeStreamCount": 2,
   "distinctNgoCount": 1
@@ -412,7 +445,9 @@ single stream object shown in the `GET /v1/streams` example (without the
 UUID, optional).
 
 Returns the stream's indexed activity newest first. `streamId` is a decimal
-string or `null`.
+string or `null`. Responses include an `ETag` and `Cache-Control` with a
+30-second public max-age; send `If-None-Match` to receive `304 Not Modified`
+when unchanged.
 
 ```json
 {
@@ -447,11 +482,15 @@ Returns `400 {"error":"invalid_request"}` for invalid parameters and
 **Auth:** Public  
 **Params:** None.
 
-Returns platform-wide totals.
+Returns platform-wide totals, including `committedByToken` entries with each
+token's committed amount.
 
 ```json
 {
   "totalCommitted": "12000",
+  "committedByToken": [
+    { "tokenAddress": "<STELLAR_CONTRACT_ADDRESS>", "amount": "12000" }
+  ],
   "totalWithdrawn": "2000",
   "activeStreams": 4,
   "verifiedNgoCount": 3
@@ -464,7 +503,8 @@ Returns platform-wide totals.
 **Path params:** `ngoId` (required): NGO UUID.
 
 Returns impact totals for one NGO and its share of platform-wide committed
-funds. Returns `400 {"error":"invalid_request"}` for a malformed UUID and
+funds. `committedByToken` and `platformCommittedByToken` report the NGO and
+platform committed amounts per token. Returns `400 {"error":"invalid_request"}` for a malformed UUID and
 `404 {"error":"not_found"}` if no NGO exists.
 
 ```json
@@ -472,6 +512,12 @@ funds. Returns `400 {"error":"invalid_request"}` for a malformed UUID and
   "ngoId": "<UUID>",
   "name": "Example Aid",
   "totalCommitted": "5000",
+  "committedByToken": [
+    { "tokenAddress": "<STELLAR_CONTRACT_ADDRESS>", "amount": "5000" }
+  ],
+  "platformCommittedByToken": [
+    { "tokenAddress": "<STELLAR_CONTRACT_ADDRESS>", "amount": "12000" }
+  ],
   "totalWithdrawn": "1200",
   "activeStreams": 2,
   "cancelledStreams": 1,
@@ -481,6 +527,16 @@ funds. Returns `400 {"error":"invalid_request"}` for a malformed UUID and
 ```
 
 ## NGO applications
+
+### `POST /v1/ngo-applications/challenge`
+
+**Auth:** Public
+
+**JSON body:** `ownerAddress` (required): applicant's Stellar public key.
+
+Issues a one-use challenge that expires after five minutes. Sign the returned
+`message` with the owner's Stellar wallet using SEP-53 generic message signing.
+The response contains `challenge`, `message`, and `expiresAt`.
 
 ### `POST /v1/ngo-applications`
 
@@ -495,9 +551,16 @@ funds. Returns `400 {"error":"invalid_request"}` for a malformed UUID and
 | `contactEmail` | email string | Yes | Contact email. |
 | `website` | URL string | No | Website; a missing scheme is normalized to `https://`. |
 | `country` | string, up to 100 characters | No | Country. |
+| `challenge` | UUID | Yes | Unexpired challenge issued for this owner address. |
+| `signature` | string | Yes | SEP-53 signature of the issued challenge `message`. |
 
+Create a challenge first, then include its `challenge` and a signature of its
+exact `message` in the application body. A challenge can be used only once.
 Creates a pending application and returns `201` with the application record.
 Returns `400 {"error":"invalid_request"}` for an invalid body,
+`400 {"error":"invalid_or_expired_challenge"}` for a missing, used, or expired
+challenge, or `401 {"error":"invalid_signature"}` when the signature does not
+match the challenge owner,
 `409 {"error":"already_approved"}` if this address already has an approved
 application, or `409 {"error":"application_already_pending"}` if one is
 pending.
@@ -554,10 +617,12 @@ Returns counts grouped by application status.
 
 **Auth:** Admin signature  
 **Query params:** `status` (`PENDING`, `APPROVED`, or `REJECTED`, optional),
-`limit` (integer, 1–100, default `100`), and `offset` (integer, minimum `0`,
-default `0`).
+`limit` (integer, 1–100, default `100`), and `offset` (integer, 0–10000,
+default `0`). An `offset` above 10000 returns `400 invalid_request`.
 
 Returns application records and the total count matching the optional status.
+Records are ordered newest first, with `id` (descending) as a tie-breaker so
+pages are stable when several applications share a creation time.
 
 ```json
 {

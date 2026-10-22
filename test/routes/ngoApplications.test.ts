@@ -4,21 +4,42 @@ import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 vi.mock('../../src/notifications/service.js', () => ({ notify: vi.fn() }));
 
 import { prisma } from '../../src/db.js';
+import { MAX_APPLICATION_LIST_OFFSET } from '../../src/routes/ngoApplications.js';
 import { buildServer } from '../../src/server.js';
 import { notify } from '../../src/notifications/service.js';
 import { fakeAddress, resetDb } from '../helpers/db.js';
 import { signAdminRequest } from '../helpers/adminAuth.js';
 
 const adminKeypair = Keypair.random();
+const applicationOwnerKeypair = Keypair.random();
 
 function validApplicationPayload(overrides: Partial<Record<string, unknown>> = {}) {
   return {
-    ownerAddress: fakeAddress('A'),
+    ownerAddress: applicationOwnerKeypair.publicKey(),
     name: 'Test NGO',
     description: 'A test NGO description.',
     contactEmail: 'ngo@example.com',
     ...overrides,
   };
+}
+
+async function signedApplicationPayload(
+  app: ReturnType<typeof buildServer>,
+  overrides: Partial<Record<string, unknown>> = {},
+  signer: Keypair = applicationOwnerKeypair,
+) {
+  const payload = validApplicationPayload(overrides);
+  const challengeResponse = await app.inject({
+    method: 'POST',
+    url: '/v1/ngo-applications/challenge',
+    payload: { ownerAddress: payload.ownerAddress },
+  });
+  if (challengeResponse.statusCode !== 201) {
+    throw new Error(`Failed to issue application challenge: ${challengeResponse.statusCode}`);
+  }
+  const challengeData = challengeResponse.json() as { challenge: string; message: string };
+  const signature = Buffer.from(signer.sign(sep53Hash(challengeData.message))).toString('base64');
+  return { ...payload, challenge: challengeData.challenge, signature };
 }
 
 describe('POST /v1/ngo-applications', () => {
@@ -37,7 +58,7 @@ describe('POST /v1/ngo-applications', () => {
     const response = await app.inject({
       method: 'POST',
       url: '/v1/ngo-applications',
-      payload: validApplicationPayload(),
+      payload: await signedApplicationPayload(app),
     });
 
     expect(response.statusCode).toBe(201);
@@ -52,13 +73,47 @@ describe('POST /v1/ngo-applications', () => {
     await app.close();
   });
 
+  it('rejects a signature from another Stellar key', async () => {
+    const app = buildServer();
+    const response = await app.inject({
+      method: 'POST',
+      url: '/v1/ngo-applications',
+      payload: await signedApplicationPayload(app, {}, Keypair.random()),
+    });
+
+    expect(response.statusCode).toBe(401);
+    expect(response.json().error).toBe('invalid_signature');
+
+    await app.close();
+  });
+
+  it('rejects an expired challenge', async () => {
+    const app = buildServer();
+    const payload = await signedApplicationPayload(app);
+    await prisma.ngoApplicationChallenge.update({
+      where: { challenge: payload.challenge },
+      data: { expiresAt: new Date(Date.now() - 1000) },
+    });
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/v1/ngo-applications',
+      payload,
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect(response.json().error).toBe('invalid_or_expired_challenge');
+
+    await app.close();
+  });
+
   it('rejects invalid input with 400', async () => {
     const app = buildServer();
 
     const response = await app.inject({
       method: 'POST',
       url: '/v1/ngo-applications',
-      payload: validApplicationPayload({ contactEmail: 'not-an-email' }),
+      payload: await signedApplicationPayload(app, { contactEmail: 'not-an-email' }),
     });
 
     expect(response.statusCode).toBe(400);
@@ -72,7 +127,7 @@ describe('POST /v1/ngo-applications', () => {
     const response = await app.inject({
       method: 'POST',
       url: '/v1/ngo-applications',
-      payload: validApplicationPayload({ website: 'example.org' }),
+      payload: await signedApplicationPayload(app, { website: 'example.org' }),
     });
 
     expect(response.statusCode).toBe(201);
@@ -87,7 +142,7 @@ describe('POST /v1/ngo-applications', () => {
     const response = await app.inject({
       method: 'POST',
       url: '/v1/ngo-applications',
-      payload: validApplicationPayload({ website: 'https://example.org' }),
+      payload: await signedApplicationPayload(app, { website: 'https://example.org' }),
     });
 
     expect(response.statusCode).toBe(201);
@@ -99,10 +154,11 @@ describe('POST /v1/ngo-applications', () => {
   it('rejects a malformed ownerAddress with 400', async () => {
     const app = buildServer();
 
+    const payload = validApplicationPayload({ ownerAddress: 'invalid-stellar-address' });
     const response = await app.inject({
       method: 'POST',
       url: '/v1/ngo-applications',
-      payload: validApplicationPayload({ ownerAddress: 'invalid-stellar-address' }),
+      payload: { ...payload, challenge: '00000000-0000-4000-8000-000000000000', signature: 'invalid' },
     });
 
     expect(response.statusCode).toBe(400);
@@ -112,12 +168,16 @@ describe('POST /v1/ngo-applications', () => {
 
   it('rejects a second pending application from the same address with 409', async () => {
     const app = buildServer();
-    const payload = validApplicationPayload();
+    const payload = await signedApplicationPayload(app);
 
     const first = await app.inject({ method: 'POST', url: '/v1/ngo-applications', payload });
     expect(first.statusCode).toBe(201);
 
-    const second = await app.inject({ method: 'POST', url: '/v1/ngo-applications', payload });
+    const second = await app.inject({
+      method: 'POST',
+      url: '/v1/ngo-applications',
+      payload: await signedApplicationPayload(app),
+    });
     expect(second.statusCode).toBe(409);
 
     await app.close();
@@ -125,10 +185,10 @@ describe('POST /v1/ngo-applications', () => {
 
   it('rejects a new application from an already-approved NGO with 409 already_approved', async () => {
     const app = buildServer();
-    const payload = validApplicationPayload();
+    const payload = await signedApplicationPayload(app);
 
     await prisma.ngoApplication.create({
-      data: { ...payload, status: 'APPROVED' },
+      data: { ...validApplicationPayload(), status: 'APPROVED' },
     });
 
     const response = await app.inject({ method: 'POST', url: '/v1/ngo-applications', payload });
@@ -140,10 +200,10 @@ describe('POST /v1/ngo-applications', () => {
 
   it('allows a rejected applicant to submit a new application', async () => {
     const app = buildServer();
-    const payload = validApplicationPayload();
+    const payload = await signedApplicationPayload(app);
 
     await prisma.ngoApplication.create({
-      data: { ...payload, status: 'REJECTED' },
+      data: { ...validApplicationPayload(), status: 'REJECTED' },
     });
 
     const response = await app.inject({ method: 'POST', url: '/v1/ngo-applications', payload });
@@ -155,14 +215,17 @@ describe('POST /v1/ngo-applications', () => {
 
   it('lets only one of two concurrent submissions through', async () => {
     const app = buildServer();
-    const payload = validApplicationPayload();
+    const [firstPayload, secondPayload] = await Promise.all([
+      signedApplicationPayload(app),
+      signedApplicationPayload(app),
+    ]);
 
     // Fired together rather than awaited in sequence: sequential requests are
     // already covered above, and only a genuine overlap exercises the race
     // where both requests read "nothing blocking" before either inserts.
     const [first, second] = await Promise.all([
-      app.inject({ method: 'POST', url: '/ngo-applications', payload }),
-      app.inject({ method: 'POST', url: '/ngo-applications', payload }),
+      app.inject({ method: 'POST', url: '/ngo-applications', payload: firstPayload }),
+      app.inject({ method: 'POST', url: '/ngo-applications', payload: secondPayload }),
     ]);
 
     expect([first.statusCode, second.statusCode].sort((a, b) => a - b)).toEqual([201, 409]);
@@ -171,7 +234,7 @@ describe('POST /v1/ngo-applications', () => {
     expect(loser.json().error).toBe('application_already_pending');
 
     const stored = await prisma.ngoApplication.findMany({
-      where: { ownerAddress: payload.ownerAddress },
+      where: { ownerAddress: firstPayload.ownerAddress },
     });
     expect(stored).toHaveLength(1);
     expect(stored[0].status).toBe('PENDING');
@@ -186,7 +249,7 @@ describe('GET /v1/ngo-applications/status', () => {
     await resetDb();
   });
 
-  it('returns only status and timestamps for the latest application', async () => {
+  it('returns the review note for the latest reviewed application without exposing submitted details', async () => {
     const app = buildServer();
     const ownerAddress = fakeAddress('S');
 
@@ -194,7 +257,11 @@ describe('GET /v1/ngo-applications/status', () => {
       data: validApplicationPayload({ ownerAddress, status: 'REJECTED' }),
     });
     const latest = await prisma.ngoApplication.create({
-      data: validApplicationPayload({ ownerAddress, status: 'APPROVED' }),
+      data: validApplicationPayload({
+        ownerAddress,
+        status: 'REJECTED',
+        reviewNote: 'Please provide registration documents.',
+      }),
     });
 
     const response = await app.inject({
@@ -204,11 +271,12 @@ describe('GET /v1/ngo-applications/status', () => {
 
     expect(response.statusCode).toBe(200);
     const body = response.json();
-    expect(body.status).toBe('APPROVED');
+    expect(body.status).toBe('REJECTED');
     expect(body.createdAt).toBe(latest.createdAt.toISOString());
     expect(body.updatedAt).toBe(latest.updatedAt.toISOString());
+    expect(body.reviewNote).toBe('Please provide registration documents.');
     // No contact details or other application fields leak out.
-    expect(Object.keys(body).sort()).toEqual(['createdAt', 'status', 'updatedAt']);
+    expect(Object.keys(body).sort()).toEqual(['createdAt', 'reviewNote', 'status', 'updatedAt']);
 
     await app.close();
   });
@@ -369,9 +437,13 @@ describe('admin NGO application review', () => {
     const response = await app.inject({ method: 'POST', url, headers, payload: {} });
     expect(response.statusCode).toBe(200);
     expect(response.json().status).toBe('APPROVED');
+    expect(response.json().reviewedBy).toBe(adminKeypair.publicKey());
+    expect(response.json().reviewedAt).toBeTypeOf('string');
 
     const stored = await prisma.ngoApplication.findUnique({ where: { id: application.id } });
     expect(stored?.status).toBe('APPROVED');
+    expect(stored?.reviewedBy).toBe(adminKeypair.publicKey());
+    expect(stored?.reviewedAt).toBeInstanceOf(Date);
     expect(notify).toHaveBeenCalledWith({
       type: 'application_reviewed',
       applicationId: application.id,
@@ -397,6 +469,8 @@ describe('admin NGO application review', () => {
 
     expect(response.statusCode).toBe(200);
     expect(response.json().status).toBe('REJECTED');
+    expect(response.json().reviewedBy).toBe(adminKeypair.publicKey());
+    expect(response.json().reviewedAt).toBeTypeOf('string');
     expect(notify).toHaveBeenCalledWith({
       type: 'application_reviewed',
       applicationId: application.id,
@@ -738,6 +812,151 @@ describe('GET /ngo-applications status filter', () => {
     expect(body.total).toBe(2);
     expect(body.limit).toBe(1);
     expect(body.offset).toBe(1);
+
+    await app.close();
+  });
+});
+
+describe('GET /v1/ngo-applications offset bound and stable paging', () => {
+  beforeAll(() => {
+    process.env.ADMIN_ADDRESS = adminKeypair.publicKey();
+  });
+
+  afterEach(async () => {
+    vi.restoreAllMocks();
+    vi.mocked(notify).mockClear();
+    await resetDb();
+  });
+
+  async function list(app: ReturnType<typeof buildServer>, query: string) {
+    const url = `/v1/ngo-applications?${query}`;
+    const headers = signAdminRequest(adminKeypair, 'GET', url);
+    return app.inject({ method: 'GET', url, headers });
+  }
+
+  it('accepts offset 0', async () => {
+    const app = buildServer();
+
+    const response = await list(app, 'offset=0');
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json().offset).toBe(0);
+
+    await app.close();
+  });
+
+  it('accepts the maximum offset and returns an empty page past the end', async () => {
+    const app = buildServer();
+    await prisma.ngoApplication.create({ data: validApplicationPayload() });
+
+    const response = await list(app, `offset=${MAX_APPLICATION_LIST_OFFSET}`);
+
+    expect(response.statusCode).toBe(200);
+    const body = response.json();
+    expect(body.offset).toBe(MAX_APPLICATION_LIST_OFFSET);
+    expect(body.applications).toEqual([]);
+    expect(body.total).toBe(1);
+
+    await app.close();
+  });
+
+  it('rejects an offset one above the maximum with 400', async () => {
+    const app = buildServer();
+
+    const response = await list(app, `offset=${MAX_APPLICATION_LIST_OFFSET + 1}`);
+
+    expect(response.statusCode).toBe(400);
+    const body = response.json();
+    expect(body.error).toBe('invalid_request');
+    expect(body.details.fieldErrors.offset).toBeDefined();
+
+    await app.close();
+  });
+
+  it('rejects very large and negative offsets with 400', async () => {
+    const app = buildServer();
+
+    for (const offset of ['2147483648', '9007199254740991', '1e12', '-1']) {
+      const response = await list(app, `offset=${offset}`);
+
+      expect(response.statusCode, `offset=${offset}`).toBe(400);
+      expect(response.json().error).toBe('invalid_request');
+    }
+
+    await app.close();
+  });
+
+  it('does not query the database for a rejected offset', async () => {
+    const app = buildServer();
+    const findMany = vi.spyOn(prisma.ngoApplication, 'findMany');
+    const count = vi.spyOn(prisma.ngoApplication, 'count');
+
+    const response = await list(app, `offset=${MAX_APPLICATION_LIST_OFFSET + 1}`);
+
+    expect(response.statusCode).toBe(400);
+    expect(findMany).not.toHaveBeenCalled();
+    expect(count).not.toHaveBeenCalled();
+
+    await app.close();
+  });
+
+  it('breaks createdAt ties by id so offset pages never repeat or skip a row', async () => {
+    const app = buildServer();
+    const sameInstant = new Date('2026-01-01T00:00:00.000Z');
+    await Promise.all(
+      ['A', 'B', 'C', 'D', 'E'].map((suffix) =>
+        prisma.ngoApplication.create({
+          data: validApplicationPayload({
+            ownerAddress: fakeAddress(suffix),
+            createdAt: sameInstant,
+          }),
+        }),
+      ),
+    );
+
+    const seen: string[] = [];
+    for (const offset of [0, 2, 4]) {
+      const response = await list(app, `limit=2&offset=${offset}`);
+      expect(response.statusCode).toBe(200);
+      for (const row of response.json().applications) seen.push(row.id);
+    }
+
+    // Every row exactly once, in a fixed order: id descending.
+    expect(new Set(seen).size).toBe(5);
+    expect(seen).toEqual([...seen].sort().reverse());
+
+    // The same pages requested again return the same rows in the same order.
+    const again: string[] = [];
+    for (const offset of [0, 2, 4]) {
+      const response = await list(app, `limit=2&offset=${offset}`);
+      for (const row of response.json().applications) again.push(row.id);
+    }
+    expect(again).toEqual(seen);
+
+    await app.close();
+  });
+
+  it('still lists newer applications before older ones', async () => {
+    const app = buildServer();
+    const older = await prisma.ngoApplication.create({
+      data: validApplicationPayload({
+        ownerAddress: fakeAddress('A'),
+        createdAt: new Date('2026-01-01T00:00:00.000Z'),
+      }),
+    });
+    const newer = await prisma.ngoApplication.create({
+      data: validApplicationPayload({
+        ownerAddress: fakeAddress('B'),
+        createdAt: new Date('2026-02-01T00:00:00.000Z'),
+      }),
+    });
+
+    const response = await list(app, 'limit=2');
+
+    expect(response.json().applications.map((a: { id: string }) => a.id)).toEqual([
+      newer.id,
+      older.id,
+    ]);
 
     await app.close();
   });
