@@ -24,7 +24,7 @@ parameters, authentication requirements, and response examples.
 The API allows up to **100 requests per minute per client IP** by default.
 `POST /v1/ngo-applications` has a tighter limit of **5 requests per minute
 per client IP**. Exceeding a limit returns `429 Too Many Requests` with
-`{"error":"rate_limited"}`. Responses include `Retry-After` and
+`{"error":"rate_limited"}`. Responses comprise `Retry-After` and
 `X-RateLimit-*` headers to help clients know when to retry.
 
 The global limit can be adjusted with `RATE_LIMIT_MAX` and
