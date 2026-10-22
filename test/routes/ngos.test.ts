@@ -29,6 +29,7 @@ describe('GET /v1/ngos', () => {
     const body = response.json();
     expect(body.ngos).toHaveLength(1);
     expect(body.ngos[0].name).toBe('Verified NGO');
+    expect(body.ngos.map((ngo: { name: string }) => ngo.name)).not.toContain('Unverified NGO');
     expect(body.nextCursor).toBeNull();
 
     await app.close();
@@ -413,6 +414,31 @@ describe('GET /ngos/lookup', () => {
     await app.close();
   });
 
+  it('returns an unverified NGO matching the given address', async () => {
+    const app = buildServer();
+
+    const ngo = await prisma.ngo.create({
+      data: {
+        ownerAddress: fakeAddress('A'),
+        name: 'Unverified Impact NGO',
+        verified: false,
+      },
+    });
+
+    const response = await app.inject({
+      method: 'GET',
+      url: `/v1/ngos/lookup?address=${ngo.ownerAddress}`,
+    });
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({
+      id: ngo.id,
+      ownerAddress: ngo.ownerAddress,
+      verified: false,
+    });
+
+    await app.close();
+  });
+
   it('404s when no NGO matches the address', async () => {
     const app = buildServer();
 
@@ -457,6 +483,28 @@ describe('GET /v1/ngos/:id', () => {
 
     const response = await app.inject({ method: 'GET', url: '/v1/ngos/not-a-uuid' });
     expect(response.statusCode).toBe(400);
+
+    await app.close();
+  });
+
+  it('returns an unverified NGO by id', async () => {
+    const app = buildServer();
+
+    const ngo = await prisma.ngo.create({
+      data: {
+        ownerAddress: fakeAddress('C'),
+        name: 'Unverified Impact NGO',
+        verified: false,
+      },
+    });
+
+    const response = await app.inject({ method: 'GET', url: `/v1/ngos/${ngo.id}` });
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({
+      id: ngo.id,
+      ownerAddress: ngo.ownerAddress,
+      verified: false,
+    });
 
     await app.close();
   });
