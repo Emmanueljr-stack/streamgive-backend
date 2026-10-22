@@ -25,7 +25,9 @@ The API allows up to **100 requests per minute per client IP** by default.
 `POST /v1/ngo-applications` has a tighter limit of **5 requests per minute
 per client IP**. Exceeding a limit returns `429 Too Many Requests` with
 `{"error":"rate_limited"}`. Responses include `Retry-After` and
-`X-RateLimit-*` headers to help clients know when to retry.
+`X-RateLimit-*` headers to help clients know when to retry. Cross-origin
+browser clients can read those headers because they are listed in the CORS
+`Access-Control-Expose-Headers` response.
 
 The global limit can be adjusted with `RATE_LIMIT_MAX` and
 `RATE_LIMIT_WINDOW`; the application submission limit can be adjusted with
@@ -41,6 +43,9 @@ per-instance limit. Restarting an instance also clears its rate-limit state.
 `GET /metrics` returns Prometheus text format (`text/plain; version=0.0.4`).
 It exposes HTTP request totals and duration, indexer checkpoint and lag, and webhook
 delivery totals. Configure Prometheus to scrape it on the API host and port.
+
+Set `METRICS_TOKEN` to require `Authorization: Bearer <token>` on `/metrics`.
+When it is unset, the endpoint stays public; see [ENVIRONMENT.md](ENVIRONMENT.md).
 
 ## NGO Verification Model
 

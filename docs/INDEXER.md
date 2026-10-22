@@ -118,7 +118,7 @@ normal, so one bad event costs exactly that event rather than the whole
 indexer.
 
 Nothing reads those rows automatically — they exist so a failure is
-inspectable and replayable by hand rather than silently dropped:
+inspectable and replayable rather than silently dropped. Inspect them with:
 
 ```sql
 SELECT event_id, ledger, contract_id, error FROM indexer_dead_letters ORDER BY ledger;
