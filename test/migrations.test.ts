@@ -93,6 +93,7 @@ describe('Prisma schema and migrations', () => {
             `Migration ${dir} failed to apply:\n${(err as Error).message}\n\n` +
               'Fix the SQL in the migration file or regenerate the migration with ' +
               '`prisma migrate dev`.',
+            { cause: err },
           );
         }
       }

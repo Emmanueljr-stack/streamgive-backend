@@ -215,6 +215,7 @@ export async function pollOnce(handleEvent: EventHandler): Promise<void> {
   for (const event of events) {
     try {
       await handleEvent(event);
+      recordIndexerEventProcessed();
     } catch (err: unknown) {
       if (isDecodeOrValidationError(err)) {
         console.error(
@@ -232,8 +233,6 @@ export async function pollOnce(handleEvent: EventHandler): Promise<void> {
         );
         throw err;
       }
-    } else {
-      recordIndexerEventProcessed();
     }
 
     // Saved per-event, not once per batch: several handlers apply relative
