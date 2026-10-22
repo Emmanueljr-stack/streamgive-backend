@@ -608,10 +608,12 @@ Returns counts grouped by application status.
 
 **Auth:** Admin signature  
 **Query params:** `status` (`PENDING`, `APPROVED`, or `REJECTED`, optional),
-`limit` (integer, 1–100, default `100`), and `offset` (integer, minimum `0`,
-default `0`).
+`limit` (integer, 1–100, default `100`), and `offset` (integer, 0–10000,
+default `0`). An `offset` above 10000 returns `400 invalid_request`.
 
 Returns application records and the total count matching the optional status.
+Records are ordered newest first, with `id` (descending) as a tie-breaker so
+pages are stable when several applications share a creation time.
 
 ```json
 {
