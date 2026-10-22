@@ -96,11 +96,28 @@ normal, so one bad event costs exactly that event rather than the whole
 indexer.
 
 Nothing reads those rows automatically — they exist so a failure is
-inspectable and replayable by hand rather than silently dropped:
+inspectable and replayable rather than silently dropped. Inspect them with:
 
 ```sql
 SELECT event_id, ledger, contract_id, error FROM indexer_dead_letters ORDER BY ledger;
 ```
+
+### Replaying dead letters
+
+After a handler fix ships, re-run every unresolved dead letter through the
+normal dispatcher:
+
+```bash
+npm run deadletters:replay
+```
+
+The command processes unresolved rows oldest-first, applies each event, and
+sets `resolved_at` when it succeeds. Rows that still fail keep their error and
+have `attempts` incremented; the command prints a summary and exits with code 1
+if any remain unresolved. Replay is not a substitute for a full backfill: some
+handlers apply relative deltas (`withdraw`, `cancel`), so only replay events
+that failed before applying their effect, and check projections if an earlier
+attempt may have partially applied one.
 
 Recording a dead letter is deliberately *not* fault-tolerant. If that write
 throws, the database is unreachable — a transient fault, not a bad event — and

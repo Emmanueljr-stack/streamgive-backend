@@ -1,3 +1,5 @@
+import { timingSafeEqual } from 'node:crypto';
+
 import cors from '@fastify/cors';
 import helmet from '@fastify/helmet';
 import rateLimit from '@fastify/rate-limit';
@@ -24,6 +26,25 @@ import { registerCompression } from './plugins/compression.js';
 // the test suite calls buildServer() dozens of times, so it's skipped for
 // NODE_ENV=test (which Vitest sets by default) as well as production.
 const USE_PRETTY_LOGS = !['production', 'test'].includes(process.env.NODE_ENV ?? '');
+
+/**
+ * Compares the bearer token in constant time so response timing cannot be
+ * used to discover METRICS_TOKEN one character at a time.
+ */
+function hasValidBearerToken(header: string | undefined, expectedToken: string): boolean {
+  if (header === undefined) {
+    return false;
+  }
+
+  const match = /^Bearer\s+(.+)$/i.exec(header.trim());
+  if (match === null) {
+    return false;
+  }
+
+  const provided = Buffer.from(match[1]);
+  const expected = Buffer.from(expectedToken);
+  return provided.length === expected.length && timingSafeEqual(provided, expected);
+}
 
 export type TrustProxySetting =
   boolean | string | string[] | ((address: string, hop: number) => boolean);
@@ -129,6 +150,13 @@ export function buildServer(options?: BuildServerOptions) {
     reply.code(statusCode).send({ error: errorString });
   });
 
+  // Fastify's default 404 body is `{ message, error, statusCode }`, while
+  // every route-level 404 in this API returns `{ error: 'not_found' }`.
+  // Clients should only need one parser, so use the same shape here.
+  app.setNotFoundHandler((_request, reply) => {
+    return reply.code(404).send({ error: 'not_found' });
+  });
+
   // Register helmet for security headers
   app.register(helmet, {
     contentSecurityPolicy: false, // Disabled for API-only server
@@ -158,7 +186,17 @@ export function buildServer(options?: BuildServerOptions) {
       'x-admin-timestamp',
       'x-request-id',
     ],
-    exposedHeaders: ['x-request-id'],
+    // Access-Control-Expose-Headers: without these, a browser on another
+    // origin cannot read the limiter's headers even though the response
+    // carries them. `Retry-After` is the machine-readable backoff contract;
+    // the x-ratelimit-* headers show the remaining budget.
+    exposedHeaders: [
+      'x-request-id',
+      'retry-after',
+      'x-ratelimit-limit',
+      'x-ratelimit-remaining',
+      'x-ratelimit-reset',
+    ],
   });
 
   app.register(rateLimit, {
@@ -194,13 +232,36 @@ export function buildServer(options?: BuildServerOptions) {
 
   /**
    * Exposes process-local Prometheus metrics.
+   *
+   * When METRICS_TOKEN is set, the endpoint requires a matching
+   * `Authorization: Bearer <token>` header so operators can protect it
+   * without a network-level rule. When it is unset the endpoint stays public.
+   *
    * @route GET /metrics
-   * @auth Public
-   * @returns 200 Prometheus text format (`text/plain; version=0.0.4`).
+   * @auth Public, or bearer token when METRICS_TOKEN is set
+   * @returns 200 Prometheus text format (`text/plain; version=0.0.4`); 401 `{ error: "unauthorized" }` when the token is missing or wrong.
    */
-  app.get('/metrics', async (_request, reply) => {
-    return reply.type('text/plain; version=0.0.4; charset=utf-8').send(renderMetrics());
-  });
+  app.get(
+    '/metrics',
+    {
+      onRequest: async (request, reply) => {
+        const token = process.env.METRICS_TOKEN?.trim();
+        if (!token) {
+          return;
+        }
+
+        if (!hasValidBearerToken(request.headers.authorization, token)) {
+          return reply
+            .code(401)
+            .header('www-authenticate', 'Bearer')
+            .send({ error: 'unauthorized' });
+        }
+      },
+    },
+    async (_request, reply) => {
+      return reply.type('text/plain; version=0.0.4; charset=utf-8').send(renderMetrics());
+    },
+  );
 
   app.register(swagger, {
     openapi: {
@@ -224,38 +285,65 @@ export function buildServer(options?: BuildServerOptions) {
   }
 
   /**
-   * Checks database and Stellar RPC availability.
+   * Races a promise against a timeout.  Rejects with a TimeoutError when the
+   * deadline is reached so callers can treat it the same as any other failure.
+   */
+  function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
+    return new Promise<T>((resolve, reject) => {
+      const timer = setTimeout(
+        () => reject(new Error(`health check timed out after ${ms} ms`)),
+        ms,
+      );
+      promise.then(
+        (v) => { clearTimeout(timer); resolve(v); },
+        (e) => { clearTimeout(timer); reject(e); },
+      );
+    });
+  }
+
+  const HEALTH_CHECK_TIMEOUT_MS = parseInt(
+    process.env.HEALTH_CHECK_TIMEOUT_MS ?? '3000',
+    10,
+  );
+
+  /**
+   * Liveness probe — only checks the database so that an RPC outage does not
+   * cause the platform to restart a healthy API process.  The check is
+   * time-boxed so a slow database is reported as degraded rather than
+   * hanging the probe indefinitely.
+   *
    * @route GET /health
    * @auth Public
-   * @returns 200 or 503 `{ status: "ok" | "error", db: "ok" | "error", rpc: "ok" | "error" }`.
+   * @returns 200 `{ status: "ok", db: "ok" }` or
+   *          503 `{ status: "error", db: "error" }`.
    */
   app.get('/health', async (_req, reply) => {
-    const [dbResult, rpcResult] = await Promise.allSettled([
-      prisma.$queryRaw`SELECT 1`,
-      getLatestLedgerSequence(),
+    const dbResult = await Promise.allSettled([
+      withTimeout(prisma.$queryRaw`SELECT 1`, HEALTH_CHECK_TIMEOUT_MS),
     ]);
 
-    const db = dbResult.status === 'fulfilled' ? 'ok' : 'error';
-    const rpc = rpcResult.status === 'fulfilled' ? 'ok' : 'error';
-
-      const status = db === 'ok' && rpc === 'ok' ? 'ok' : 'error';
-      return reply.code(status === 'ok' ? 200 : 503).send({ status, db, rpc });
+    const db = dbResult[0].status === 'fulfilled' ? 'ok' : 'error';
+    const status = db === 'ok' ? 'ok' : 'error';
+    return reply.code(status === 'ok' ? 200 : 503).send({ status, db });
   });
 
   /**
-   * Checks readiness, including database availability and indexer lag.
+   * Readiness probe — checks the database, the Stellar RPC node, and indexer
+   * lag.  Each remote call is time-boxed so a slow dependency is reported as
+   * degraded rather than hanging the probe indefinitely.
+   *
    * @route GET /health/ready
    * @auth Public
    * @returns 200 `{ status: "ok", lag, latestLedger, checkpointLedger }`; 503 `{ status: "error", reason, ... }` when unavailable or not caught up.
    */
   app.get('/health/ready', async (request, reply) => {
     try {
-      // 1. Check DB
-      await prisma.$queryRaw`SELECT 1`;
+      // 1. Check DB (time-boxed)
+      await withTimeout(prisma.$queryRaw`SELECT 1`, HEALTH_CHECK_TIMEOUT_MS);
 
-      // 2. Get RPC and Indexer info
+      // 2. Get RPC and Indexer info (both time-boxed)
       const [latestLedger, checkpointLedger] = await Promise.all([
-        getLatestLedgerSequence(),
+        withTimeout(getLatestLedgerSequence(), HEALTH_CHECK_TIMEOUT_MS),
         getCheckpoint(),
       ]);
 

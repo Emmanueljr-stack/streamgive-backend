@@ -1,6 +1,3 @@
-import { Test } from '@nestjs/testing';
-import { INestApplication } from '@nestjs/common';
-
 describe('Graceful Shutdown Sequence (#284)', () => {
   it('should stop indexer, close app, and disconnect Prisma in correct order', async () => {
     const executionOrder: string[] = [];

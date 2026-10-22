@@ -203,45 +203,88 @@ export async function streamRoutes(app: FastifyInstance): Promise<void> {
    * @param id Stream UUID
    * @query limit, cursor
    * @auth Public
-   * @returns 200 `{ events: StreamEvent[], hasMore: boolean }` with `streamId` serialized as a string or null; 400 invalid params/query; 404 `{ error: "not_found" }`.
+   * @returns 200 `{ events: StreamEvent[], hasMore: boolean, nextCursor: string | null }` with `streamId` serialized as a string or null; 400 invalid params/query or unknown cursor; 404 `{ error: "not_found" }`.
    */
-  app.get('/streams/:id/activity', async (request, reply) => {
-    const parsedParams = idParamSchema.safeParse(request.params);
-    if (!parsedParams.success) {
-      return reply.code(400).send({ error: 'invalid_request' });
-    }
+  app.get(
+    '/streams/:id/activity',
+    {
+      schema: {
+        tags: ['Streams'],
+        summary: 'List activity events for a stream',
+        description:
+          'Returns on-chain events for the given stream, newest first, with cursor pagination.',
+        params: {
+          type: 'object',
+          properties: { id: { type: 'string', format: 'uuid' } },
+          required: ['id'],
+        },
+        querystring: {
+          type: 'object',
+          properties: {
+            limit: { type: 'integer', minimum: 1, maximum: 100, default: 100 },
+            cursor: { type: 'string', format: 'uuid' },
+          },
+        },
+        response: {
+          200: { type: 'object', additionalProperties: true },
+          400: { type: 'object', additionalProperties: true },
+          404: { type: 'object', additionalProperties: true },
+        },
+      },
+    },
+    async (request, reply) => {
+      const parsedParams = idParamSchema.safeParse(request.params);
+      if (!parsedParams.success) {
+        return reply.code(400).send({ error: 'invalid_request' });
+      }
 
-    const parsedQuery = activityQuerySchema.safeParse(request.query);
-    if (!parsedQuery.success) {
-      return reply
-        .code(400)
-        .send({ error: 'invalid_request', details: parsedQuery.error.flatten() });
-    }
+      const parsedQuery = activityQuerySchema.safeParse(request.query);
+      if (!parsedQuery.success) {
+        return reply
+          .code(400)
+          .send({ error: 'invalid_request', details: parsedQuery.error.flatten() });
+      }
 
-    const { limit, cursor } = parsedQuery.data;
+      const { limit, cursor } = parsedQuery.data;
 
-    const stream = await prisma.stream.findUnique({
-      where: { id: parsedParams.data.id },
-      select: { onChainId: true },
-    });
+      const stream = await prisma.stream.findUnique({
+        where: { id: parsedParams.data.id },
+        select: { onChainId: true },
+      });
 
-    if (!stream) {
-      return reply.code(404).send({ error: 'not_found' });
-    }
+      if (!stream) {
+        return reply.code(404).send({ error: 'not_found' });
+      }
 
-    const rows = await prisma.streamEvent.findMany({
-      where: { streamId: stream.onChainId },
-      orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
-      take: limit + 1,
-      ...(cursor ? { skip: 1, cursor: { id: cursor } } : {}),
-    });
+      // Validate the cursor before using it: an unknown cursor would silently
+      // produce an empty page, which is indistinguishable from a real empty
+      // last page and makes bugs very hard to diagnose. Treating it as a 400
+      // is consistent with how GET /donors handles an unknown cursor.
+      if (cursor) {
+        const cursorEvent = await prisma.streamEvent.findUnique({
+          where: { id: cursor },
+          select: { id: true },
+        });
+        if (!cursorEvent) {
+          return reply.code(400).send({ error: 'invalid_request' });
+        }
+      }
 
-    const hasMore = rows.length > limit;
-    const events = hasMore ? rows.slice(0, limit) : rows;
+      const rows = await prisma.streamEvent.findMany({
+        where: { streamId: stream.onChainId },
+        orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+        take: limit + 1,
+        ...(cursor ? { skip: 1, cursor: { id: cursor } } : {}),
+      });
 
-    return sendPublicCacheable(request, reply, {
-      events: events.map(serializeStreamEvent),
-      hasMore,
-    });
-  });
+      const hasMore = rows.length > limit;
+      const events = hasMore ? rows.slice(0, limit) : rows;
+
+      return sendPublicCacheable(request, reply, {
+        events: events.map(serializeStreamEvent),
+        hasMore,
+        nextCursor: hasMore ? (events.at(-1)?.id ?? null) : null,
+      });
+    },
+  );
 }
