@@ -75,6 +75,50 @@ describe('GET /v1/donors', () => {
     await app.close();
   });
 
+  it('uses a different ETag when a query string changes the representation', async () => {
+    const app = buildServer();
+    const ngo = await prisma.ngo.create({
+      data: { ownerAddress: fakeAddress('N'), name: 'NGO', verified: true },
+    });
+    const [highBalance, highWithdrawn] = await Promise.all([
+      prisma.donor.create({ data: { address: fakeAddress('A') } }),
+      prisma.donor.create({ data: { address: fakeAddress('B') } }),
+    ]);
+
+    await prisma.stream.createMany({
+      data: [
+        {
+          onChainId: 1n,
+          donorId: highBalance.id,
+          ngoId: ngo.id,
+          tokenAddress: fakeAddress('T'),
+          rate: '1',
+          balance: '900',
+          withdrawn: '100',
+        },
+        {
+          onChainId: 2n,
+          donorId: highWithdrawn.id,
+          ngoId: ngo.id,
+          tokenAddress: fakeAddress('T'),
+          rate: '1',
+          balance: '100',
+          withdrawn: '900',
+        },
+      ],
+    });
+
+    const committed = await app.inject({ method: 'GET', url: '/v1/donors?sort=committed' });
+    const withdrawn = await app.inject({ method: 'GET', url: '/v1/donors?sort=withdrawn' });
+
+    expect(committed.statusCode).toBe(200);
+    expect(withdrawn.statusCode).toBe(200);
+    expect(committed.body).not.toBe(withdrawn.body);
+    expect(committed.headers.etag).not.toBe(withdrawn.headers.etag);
+
+    await app.close();
+  });
+
   it('sorts by withdrawn amount and paginates the ranked result', async () => {
     const app = buildServer();
     const ngo = await prisma.ngo.create({
