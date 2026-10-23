@@ -5,6 +5,7 @@ import { describe, expect, it } from 'vitest';
 
 import { sendPublicCacheable } from '../src/routes/cacheable.js';
 
+/** The validator the helper is expected to produce for a given body. */
 function expectedEtag(body: string): string {
   return `"${createHash('sha256').update(body).digest('base64url')}"`;
 }
