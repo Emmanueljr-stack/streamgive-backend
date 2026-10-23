@@ -103,34 +103,6 @@ npm run dev
 
 In development, interactive API documentation is available at `http://localhost:3000/docs`; the OpenAPI document is at `/docs/json`. Swagger UI is disabled in production.
 
-```
-bash
-cp .env.example .env
-docker compose up -d postgres   # starts Postgres (+ a streamgive_test DB)
-npm install
-npm run db:migrate              # apply Prisma migrations to streamgive
-npm run db:seed                 # optional: load sample NGOs, donors and streams
-npm run dev
-```
-
-```
-cp .env.example .env
-docker compose up -d postgres   # starts Postgres (+ a streamgive_test DB)
-npm install
-npm run db:deploy               # apply Prisma migrations to streamgive
-npm run db:seed                 # optional: load sample NGOs, donors and streams
-npm run dev
-```
-
-```
-cp .env.example .env
-docker compose up -d postgres   # starts Postgres (+ a streamgive_test DB)
-npm install
-npm run db:deploy               # apply Prisma migrations to streamgive
-npm run db:seed                 # optional: load sample NGOs, donors and streams
-npm run dev
-```
-
 The test database is created by the `postgres` service in `docker-compose.yml`
 as `streamgive_test`. Start it with `docker compose up -d postgres`, copy
 `.env.test.example` to `.env.test`, run `npm run db:push:test` to sync the
@@ -138,46 +110,31 @@ Prisma schema to that database, and only then run `npm test`.
 
 ## Troubleshooting
 
-```
-cp .env.example .env
-docker compose up -d postgres   # starts Postgres (+ a streamgive_test DB)
-npm install
-npm run db:deploy               # apply Prisma migrations to streamgive
-npm run db:seed                 # optional: load sample NGOs, donors and streams
-npm run dev
-```
+**"Can't reach database" / connection errors on startup**
 
-```
-cp .env.example .env
-docker compose up -d postgres   # starts Postgres (+ a streamgive_test DB)
-npm install
-npm run db:deploy               # apply Prisma migrations to streamgive
-npm run db:seed                 # optional: load sample NGOs, donors and streams
-npm run dev
-```
+Postgres isn't up yet, or `DATABASE_URL` doesn't point at it. Run
+`docker compose up -d postgres` and confirm `DATABASE_URL` in `.env` matches
+(`postgresql://streamgive:streamgive@localhost:5432/streamgive` when running
+`npm run dev` directly — the `postgres` host only resolves inside
+`docker compose`, see the override in `docker-compose.yml`). Then run
+`npm run db:deploy` to apply the committed migrations.
 
-```
-cp .env.example .env
-docker compose up -d postgres   # starts Postgres (+ a streamgive_test DB)
-npm install
-npm run db:deploy               # apply Prisma migrations to streamgive
-npm run db:seed                 # optional: load sample NGOs, donors and streams
-npm run dev
-```
+**Indexer never picks up events**
 
-### Verifying the signature
+If `NGO_REGISTRY_CONTRACT_ID` and `DONATION_VAULT_CONTRACT_ID` are both
+unset, this is expected — the indexer no-ops until at least one is set. See
+[ENVIRONMENT.md](./ENVIRONMENT.md) for where to get the deployed contract
+ids. If they're set and events still aren't showing up, check
+`SOROBAN_RPC_URL` is reachable and that the contracts have actually emitted
+events since the indexer's checkpoint (a fresh run starts from the current
+ledger, not from the contract's history).
 
-The webhook URL is not a secret — anyone who learns it can POST whatever they
-like to your receiver. Set `NOTIFY_WEBHOOK_SECRET` to a shared secret and
-every request will additionally carry:
+**Admin routes return 503**
 
-```
-x-streamgive-signature: <hex>
-```
-
-where `<hex>` is the lower-case hex HMAC-SHA256 of the **raw request body**,
-keyed with `NOTIFY_WEBHOOK_SECRET`. There is no prefix, timestamp or version
-tag in the value — it is the bare digest.
+`ADMIN_ADDRESS` is unset. The admin review endpoints refuse all requests
+until it's configured — set it to the Stellar public key (`G...`) that
+matches the `admin` configured on the deployed contracts. See
+[ENVIRONMENT.md](./ENVIRONMENT.md).
 
 ## Data model and API statistics
 
@@ -211,279 +168,116 @@ is configured — but an endpoint that accepts unsigned requests is exactly the
 hole the header exists to close, so treat that as a migration step rather
 than a resting state.
 
-```
-cp .env.example .env
-docker compose up -d postgres   # starts Postgres (+ a streamgive_test DB)
-npm install
-npm run db:deploy               # apply Prisma migrations to streamgive
-npm run db:seed                 # optional: load sample NGOs, donors and streams
-npm run dev
+### Verifying the signature
+
+The webhook URL is not a secret — anyone who learns it can POST whatever they
+like to your receiver. Set `NOTIFY_WEBHOOK_SECRET` to a shared secret and
+every request will additionally carry:
 
 ```
-cp .env.example .env
-docker compose up -d postgres   # starts Postgres (+ a streamgive_test DB)
-npm install
-npm run db:deploy               # apply Prisma migrations to streamgive
-npm run db:seed                 # optional: load sample NGOs, donors and streams
-npm run dev
+x-streamgive-signature: <hex>
 ```
 
-```
-cp .env.example .env
-docker compose up -d postgres   # starts Postgres (+ a streamgive_test DB)
-npm install
-npm run db:deploy               # apply Prisma migrations to streamgive
-npm run db:seed                 # optional: load sample NGOs, donors and streams
-npm run dev
+where `<hex>` is the lower-case hex HMAC-SHA256 of the **raw request body**,
+keyed with `NOTIFY_WEBHOOK_SECRET`. There is no prefix, timestamp or version
+tag in the value — it is the bare digest.
+
+### `stream_created`
+
+Emitted when a donor opens a new donation stream to an NGO.
+
+```json
+{
+  "type": "stream_created",
+  "streamId": "1234",
+  "donorAddress": "GABC...",
+  "ngoId": "clx1y2z3..."
+}
 ```
 
-```
-cp .env.example .env
-docker compose up -d postgres   # starts Postgres (+ a streamgive_test DB)
-npm install
-npm run db:deploy               # apply Prisma migrations to streamgive
-npm run db:seed                 # optional: load sample NGOs, donors and streams
-npm run dev
+- `streamId` — the stream's on-chain id, as a string.
+- `donorAddress` — the donor's Stellar account address.
+- `ngoId` — the internal (database) id of the receiving NGO.
+
+### `stream_withdrawn`
+
+Emitted when accrued funds are withdrawn to the NGO from an active stream.
+
+```json
+{
+  "type": "stream_withdrawn",
+  "streamId": "1234",
+  "amount": "500000000"
+}
 ```
 
-```
-cp .env.example .env
-docker compose up -d postgres   # starts Postgres (+ a streamgive_test DB)
-npm install
-npm run db:deploy               # apply Prisma migrations to streamgive
-npm run db:seed                 # optional: load sample NGOs, donors and streams
-npm run dev
+- `streamId` — the stream's on-chain id, as a string.
+- `amount` — the amount withdrawn, in the stream's token base units, as a string.
+
+### `stream_cancelled`
+
+Emitted when a stream is cancelled, settling accrued funds to the NGO and
+refunding the remaining balance to the donor.
+
+```json
+{
+  "type": "stream_cancelled",
+  "streamId": "1234",
+  "settledToNgo": "500000000",
+  "refundToDonor": "1500000000"
+}
 ```
 
-```
-cp .env.example .env
-docker compose up -d postgres   # starts Postgres (+ a streamgive_test DB)
-npm install
-npm run db:deploy               # apply Prisma migrations to streamgive
-npm run db:seed                 # optional: load sample NGOs, donors and streams
-npm run dev
+- `streamId` — the stream's on-chain id, as a string.
+- `settledToNgo` — the amount settled to the NGO at cancellation time, in the stream's token base units, as a string.
+- `refundToDonor` — the amount refunded to the donor, in the stream's token base units, as a string.
+
+### `ngo_approved`
+
+Emitted when an admin approves an NGO on-chain.
+
+```json
+{
+  "type": "ngo_approved",
+  "ownerAddress": "GABC...",
+  "ngoId": "clx1y2z3..."
+}
 ```
 
-```
-cp .env.example .env
-docker compose up -d postgres   # starts Postgres (+ a streamgive_test DB)
-npm install
-npm run db:deploy               # apply Prisma migrations to streamgive
-npm run db:seed                 # optional: load sample NGOs, donors and streams
-npm run dev
+- `ownerAddress` — the NGO owner's Stellar account address.
+- `ngoId` — the internal (database) id of the approved NGO.
+
+### `ngo_revoked`
+
+Emitted when a previously-approved NGO has its verified status revoked on-chain.
+
+```json
+{
+  "type": "ngo_revoked",
+  "ownerAddress": "GABC...",
+  "ngoId": "clx1y2z3..."
+}
 ```
 
-```
-cp .env.example .env
-docker compose up -d postgres   # starts Postgres (+ a streamgive_test DB)
-npm install
-npm run db:deploy               # apply Prisma migrations to streamgive
-npm run db:seed                 # optional: load sample NGOs, donors and streams
-npm run dev
-```
+- `ownerAddress` — the NGO owner's Stellar account address.
+- `ngoId` — the internal (database) id of the revoked NGO.
 
-```
-cp .env.example .env
-docker compose up -d postgres   # starts Postgres (+ a streamgive_test DB)
-npm install
-npm run db:deploy               # apply Prisma migrations to streamgive
-npm run db:seed                 # optional: load sample NGOs, donors and streams
-npm run dev
-```
+## Contributing
 
-```
-cp .env.example .env
-docker compose up -d postgres   # starts Postgres (+ a streamgive_test DB)
-npm install
-npm run db:deploy               # apply Prisma migrations to streamgive
-npm run db:seed                 # optional: load sample NGOs, donors and streams
-npm run dev
-```
+See [CONTRIBUTING.md](./CONTRIBUTING.md) for local setup, how to run tests, and
+how to open a pull request. The full project-wide contribution guide lives in
+[streamgive-docs](https://github.com/streamgive/streamgive-docs).
 
-```
-cp .env.example .env
-docker compose up -d postgres   # starts Postgres (+ a streamgive_test DB)
-npm install
-npm run db:deploy               # apply Prisma migrations to streamgive
-npm run db:seed                 # optional: load sample NGOs, donors and streams
-npm run dev
-```
+## Related repositories
 
-```
-cp .env.example .env
-docker compose up -d postgres   # starts Postgres (+ a streamgive_test DB)
-npm install
-npm run db:deploy               # apply Prisma migrations to streamgive
-npm run db:seed                 # optional: load sample NGOs, donors and streams
-npm run dev
-```
+- [streamgive-contracts](https://github.com/streamgive/streamgive-contracts) — Soroban smart contracts
+- [streamgive-frontend](https://github.com/streamgive/streamgive-frontend) — donor & NGO web app
+- [streamgive-docs](https://github.com/streamgive/streamgive-docs) — documentation
 
-```
-cp .env.example .env
-docker compose up -d postgres   # starts Postgres (+ a streamgive_test DB)
-npm install
-npm run db:deploy               # apply Prisma migrations to streamgive
-npm run db:seed                 # optional: load sample NGOs, donors and streams
-npm run dev
-```
+## Status
 
-```
-cp .env.example .env
-docker compose up -d postgres   # starts Postgres (+ a streamgive_test DB)
-npm install
-npm run db:deploy               # apply Prisma migrations to streamgive
-npm run db:seed                 # optional: load sample NGOs, donors and streams
-npm run dev
-```
+Early development.
 
-```
-cp .env.example .env
-docker compose up -d postgres   # starts Postgres (+ a streamgive_test DB)
-npm install
-npm run db:deploy               # apply Prisma migrations to streamgive
-npm run db:seed                 # optional: load sample NGOs, donors and streams
-npm run dev
-```
+## License
 
-```
-cp .env.example .env
-docker compose up -d postgres   # starts Postgres (+ a streamgive_test DB)
-npm install
-npm run db:deploy               # apply Prisma migrations to streamgive
-npm run db:seed                 # optional: load sample NGOs, donors and streams
-npm run dev
-```
-
-```
-cp .env.example .env
-docker compose up -d postgres   # starts Postgres (+ a streamgive_test DB)
-npm install
-npm run db:deploy               # apply Prisma migrations to streamgive
-npm run db:seed                 # optional: load sample NGOs, donors and streams
-npm run dev
-```
-
-```
-cp .env.example .env
-docker compose up -d postgres   # starts Postgres (+ a streamgive_test DB)
-npm install
-npm run db:deploy               # apply Prisma migrations to streamgive
-npm run db:seed                 # optional: load sample NGOs, donors and streams
-npm run dev
-```
-
-```
-cp .env.example .env
-docker compose up -d postgres   # starts Postgres (+ a streamgive_test DB)
-npm install
-npm run db:deploy               # apply Prisma migrations to streamgive
-npm run db:seed                 # optional: load sample NGOs, donors and streams
-npm run dev
-```
-
-```
-cp .env.example .env
-docker compose up -d postgres   # starts Postgres (+ a streamgive_test DB)
-npm install
-npm run db:deploy               # apply Prisma migrations to streamgive
-npm run db:seed                 # optional: load sample NGOs, donors and streams
-npm run dev
-```
-
-```
-cp .env.example .env
-docker compose up -d postgres   # starts Postgres (+ a streamgive_test DB)
-npm install
-npm run db:deploy               # apply Prisma migrations to streamgive
-npm run db:seed                 # optional: load sample NGOs, donors and streams
-npm run dev
-```
-
-```
-cp .env.example .env
-docker compose up -d postgres   # starts Postgres (+ a streamgive_test DB)
-npm install
-npm run db:deploy               # apply Prisma migrations to streamgive
-npm run db:seed                 # optional: load sample NGOs, donors and streams
-npm run dev
-```
-
-```
-cp .env.example .env
-docker compose up -d postgres   # starts Postgres (+ a streamgive_test DB)
-npm install
-npm run db:deploy               # apply Prisma migrations to streamgive
-npm run db:seed                 # optional: load sample NGOs, donors and streams
-npm run dev
-```
-
-```
-cp .env.example .env
-docker compose up -d postgres   # starts Postgres (+ a streamgive_test DB)
-npm install
-npm run db:deploy               # apply Prisma migrations to streamgive
-npm run db:seed                 # optional: load sample NGOs, donors and streams
-npm run dev
-```
-
-```
-cp .env.example .env
-docker compose up -d postgres   # starts Postgres (+ a streamgive_test DB)
-npm install
-npm run db:deploy               # apply Prisma migrations to streamgive
-npm run db:seed                 # optional: load sample NGOs, donors and streams
-npm run dev
-```
-
-```
-cp .env.example .env
-docker compose up -d postgres   # starts Postgres (+ a streamgive_test DB)
-npm install
-npm run db:deploy               # apply Prisma migrations to streamgive
-npm run db:seed                 # optional: load sample NGOs, donors and streams
-npm run dev
-```
-
-```
-cp .env.example .env
-docker compose up -d postgres   # starts Postgres (+ a streamgive_test DB)
-npm install
-npm run db:deploy               # apply Prisma migrations to streamgive
-npm run db:seed                 # optional: load sample NGOs, donors and streams
-npm run dev
-```
-
-```
-cp .env.example .env
-docker compose up -d postgres   # starts Postgres (+ a streamgive_test DB)
-npm install
-npm run db:deploy               # apply Prisma migrations to streamgive
-npm run db:seed                 # optional: load sample NGOs, donors and streams
-npm run dev
-```
-
-```
-cp .env.example .env
-docker compose up -d postgres   # starts Postgres (+ a streamgive_test DB)
-npm install
-npm run db:deploy               # apply Prisma migrations to streamgive
-npm run db:seed                 # optional: load sample NGOs, donors and streams
-npm run dev
-```
-
-```
-cp .env.example .env
-docker compose up -d postgres   # starts Postgres (+ a streamgive_test DB)
-npm install
-npm run db:deploy               # apply Prisma migrations to streamgive
-npm run db:seed                 # optional: load sample NGOs, donors and streams
-npm run dev
-```
-
-```
-cp .env.example .env
-docker compose up -d postgres   # starts Postgres (+ a streamgive_test DB)
-npm install
-npm run db:deploy               # apply Prisma migrations to streamgive
-npm run db:seed                 # optional: load sample NGOs, donors and streams
-npm run dev
+Apache-2.0 — see [LICENSE](./LICENSE).
