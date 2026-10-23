@@ -28,7 +28,65 @@ seconds.
 
 Routes marked **Public** do not require authentication. Public directory,
 stream, and impact endpoints may return `304 Not Modified` when the
-`If-None-Match` header matches their ETag.
+`If-None-Match` header matches their ETag. See [Caching and conditional requests](#caching-and-conditional-requests).
+
+Unknown routes return `404` with the same body used by every other missing
+resource: `{"error":"not_found"}`.
+
+## Caching and conditional requests
+
+Eleven public read endpoints send a validator and a short shared-cache
+lifetime. Everything else is uncached.
+
+| Method and path | Cacheable |
+|---|---|
+| `GET /v1/ngos` | Yes |
+| `GET /v1/ngos/lookup` | Yes |
+| `GET /v1/ngos/{id}` | Yes |
+| `GET /v1/ngos/{id}/donors` | Yes |
+| `GET /v1/donors` | Yes |
+| `GET /v1/donors/{address}` | Yes |
+| `GET /v1/streams` | Yes |
+| `GET /v1/streams/{id}` | Yes |
+| `GET /v1/streams/{id}/activity` | Yes |
+| `GET /v1/impact` | Yes |
+| `GET /v1/impact/{ngoId}` | Yes |
+
+Not cacheable: `GET /v1/ngos/all`, `GET /v1/ngo-applications*`, the admin
+routes, `GET /v1/donors/{address}/streams.csv`, `GET /v1/indexer/status`,
+`GET /health`, `GET /health/ready`, and `GET /metrics`.
+
+### Headers
+
+A cacheable response carries:
+
+```
+Cache-Control: public, max-age=30, stale-while-revalidate=60
+ETag: "<base64url SHA-256 of the response body>"
+```
+
+The ETag is computed over the exact JSON bytes sent, so it changes whenever
+the body changes. Responses are not personalised, so a shared cache may store
+them for 30 seconds and serve a stale copy for up to a further 60 seconds
+while it revalidates.
+
+### Conditional requests
+
+Send the ETag back in `If-None-Match` to get a body-less `304 Not Modified`
+while the resource is unchanged:
+
+```
+GET /v1/ngos/{id} HTTP/1.1
+If-None-Match: "3f2a…"
+
+HTTP/1.1 304 Not Modified
+Cache-Control: public, max-age=30, stale-while-revalidate=60
+ETag: "3f2a…"
+```
+
+`If-None-Match` accepts a comma-separated list of ETags, weak validators
+(`W/"…"`, compared as strong), and `*`. A request whose validator no longer
+matches receives the full `200` response with the new ETag.
 
 ## Integer and amount representation
 
@@ -82,8 +140,14 @@ unavailable.
 
 ### `GET /metrics`
 
-**Auth:** Public  
+**Auth:** Public, or bearer token when `METRICS_TOKEN` is set
+
 **Params:** None.
+
+If the server has `METRICS_TOKEN` set, this endpoint requires
+`Authorization: Bearer <token>`. A missing or wrong token returns
+`401 { "error": "unauthorized" }`. When `METRICS_TOKEN` is unset, the
+endpoint is public.
 
 Returns Prometheus exposition text (`text/plain; version=0.0.4`), including
 HTTP request and duration metrics, indexer checkpoint and lag, and webhook
@@ -182,7 +246,12 @@ Lists verified and unverified NGOs.
 **Query params:** `address` (required): Stellar public key (`G` followed by
 55 base32 characters).
 
-Looks up an NGO profile by its owner address. Returns `400
+Looks up an NGO profile by its owner address. This endpoint is public and
+returns a profile whether or not the NGO is verified. This intentionally
+differs from `GET /v1/ngos`, which lists verified NGOs only. For an unverified
+or placeholder NGO, `verified` is `false`; `name` and approved-application
+fields (`description`, `website`, and `country`) can be `null`. The lookup
+does not expose pending application details. Returns `400
 {"error":"invalid_request"}` for an invalid address and `404
 {"error":"not_found"}` if there is no matching NGO. The response has the same
 shape as `GET /v1/ngos/{id}`; see that endpoint's example response.
@@ -192,7 +261,13 @@ shape as `GET /v1/ngos/{id}`; see that endpoint's example response.
 **Auth:** Public  
 **Path params:** `id` (required): NGO UUID.
 
-Returns an NGO profile, impact totals, and up to ten recent streams. Returns
+Returns an NGO profile, impact totals, and up to ten recent streams for
+verified, unverified, and placeholder NGOs. This public ID lookup is not a
+verification check: callers must inspect `verified` before treating an NGO as
+approved. Placeholder records can have `registered: false` and `name: null`;
+unverified records can have `verified: false` and `null` approved-application
+fields (`description`, `website`, and `country`). Pending application details
+remain private. Returns
 `400 {"error":"invalid_request"}` for an invalid ID or
 `404 {"error":"not_found"}` if no NGO exists.
 
@@ -608,10 +683,12 @@ Returns counts grouped by application status.
 
 **Auth:** Admin signature  
 **Query params:** `status` (`PENDING`, `APPROVED`, or `REJECTED`, optional),
-`limit` (integer, 1–100, default `100`), and `offset` (integer, minimum `0`,
-default `0`).
+`limit` (integer, 1–100, default `100`), and `offset` (integer, 0–10000,
+default `0`). An `offset` above 10000 returns `400 invalid_request`.
 
 Returns application records and the total count matching the optional status.
+Records are ordered newest first, with `id` (descending) as a tie-breaker so
+pages are stable when several applications share a creation time.
 
 ```json
 {

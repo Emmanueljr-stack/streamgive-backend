@@ -297,6 +297,41 @@ describe('handleDonationVaultEvent', () => {
     expect(streamEvent).toBeNull();
   });
 
+  it('is idempotent when the same created event is replayed', async () => {
+    const donor = fakeAddress('AA');
+    const ngo = fakeAddress('AB');
+    const token = fakeAddress('AC');
+
+    const event = makeEvent(
+      [symbolScVal('created'), u64ScVal(7n)],
+      xdr.ScVal.scvVec([
+        addressScVal(donor),
+        addressScVal(ngo),
+        addressScVal(token),
+        i128ScVal(1000n),
+        i128ScVal(10n),
+      ]),
+    );
+
+    // Process the exact same event twice — the second pass is a replay
+    // (e.g. indexer restarted after a crash between handler and checkpoint).
+    await handleDonationVaultEvent(event);
+    await handleDonationVaultEvent(event);
+
+    // Exactly one row of each, not two.
+    expect(await prisma.donor.count({ where: { address: donor } })).toBe(1);
+    expect(await prisma.ngo.count({ where: { ownerAddress: ngo } })).toBe(1);
+    expect(await prisma.stream.count({ where: { onChainId: 7n } })).toBe(1);
+
+    // And the single stream row has the original values — the replay didn't
+    // touch balance/rate/status.
+    const stream = await prisma.stream.findUnique({ where: { onChainId: 7n } });
+    expect(stream?.balance).toBe('1000');
+    expect(stream?.rate).toBe('10');
+    expect(stream?.withdrawn).toBe('0');
+    expect(stream?.status).toBe('ACTIVE');
+  });
+
   it('warns and records a dead letter when a withdraw event is received for an unknown stream', async () => {
     const warn = vi.spyOn(logger, 'warn');
     const unknownOnChainId = 999n;
