@@ -20,6 +20,7 @@ describe('public conditional responses', () => {
     const firstResponse = await app.inject({ method: 'GET', url: '/public' });
     const etag = firstResponse.headers.etag;
     expect(etag).toBeDefined();
+    expect(etag).toBe(expectedEtag(JSON.stringify({ value: 'current' })));
     expect(firstResponse.headers['cache-control']).toContain('public');
 
     const cachedResponse = await app.inject({

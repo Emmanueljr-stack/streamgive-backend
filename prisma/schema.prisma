@@ -57,7 +57,7 @@ model Stream {
   /// precision loss — Postgres bigint/numeric mapping is handled at the
   /// application layer, not by Prisma's native int types.
   rate          String
-  lastRate      String?
+  lastRate      String?      @map("last_rate")
   balance       String
   withdrawn     String
   status        StreamStatus @default(ACTIVE)

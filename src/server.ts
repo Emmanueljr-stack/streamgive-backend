@@ -201,6 +201,7 @@ export function buildServer(options?: BuildServerOptions) {
   });
 
   app.register(rateLimit, {
+    global: true,
     max: Number(process.env.RATE_LIMIT_MAX ?? 100),
     timeWindow: process.env.RATE_LIMIT_WINDOW ?? '1 minute',
     // Spell the headers out instead of leaning on the plugin's defaults:
@@ -213,6 +214,16 @@ export function buildServer(options?: BuildServerOptions) {
       'x-ratelimit-reset': true,
       'retry-after': true,
     },
+  });
+
+  // Root routes are declared before the limiter plugin's global onRoute hook runs.
+  const rootRateLimitedRoutes = new Set(['/metrics', '/health', '/health/ready']);
+  app.addHook('onRequest', async (request, reply) => {
+    if (rootRateLimitedRoutes.has(request.routeOptions.url ?? '')) {
+      await request.server.rateLimit
+        .call(request.server)
+        .call(request.server, request, reply);
+    }
   });
 
   app.addHook('onRequest', async (request) => {
@@ -353,7 +364,8 @@ export function buildServer(options?: BuildServerOptions) {
       }
 
       const lag = latestLedger - checkpointLedger;
-      const threshold = parseInt(process.env.INDEXER_LAG_THRESHOLD ?? '100', 10);
+      const parsedThreshold = parseInt(process.env.INDEXER_LAG_THRESHOLD ?? '100', 10);
+      const threshold = Number.isNaN(parsedThreshold) ? 0 : parsedThreshold;
 
       if (lag > threshold) {
         return reply.code(503).send({ status: 'error', reason: 'indexer_lagging', lag, threshold });

@@ -213,7 +213,7 @@ describe('GET /health/ready', () => {
     await app.close();
   });
 
-  it('parses INDEXER_LAG_THRESHOLD as NaN for non-numeric values and treats them as 0', async () => {
+  it('treats a non-numeric INDEXER_LAG_THRESHOLD as 0', async () => {
     const original = process.env.INDEXER_LAG_THRESHOLD;
     process.env.INDEXER_LAG_THRESHOLD = 'abc';
 
@@ -227,7 +227,7 @@ describe('GET /health/ready', () => {
     expect(body.status).toBe('error');
     expect(body.reason).toBe('indexer_lagging');
     expect(body.lag).toBe(1);
-    expect(isNaN(body.threshold)).toBe(true);
+    expect(body.threshold).toBe(0);
 
     await app.close();
 
