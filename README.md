@@ -14,10 +14,19 @@ serves the data that powers the frontend.
 
 ## API
 
-Most API routes, including admin routes, are mounted under `/v1`. Health checks
-are available at `/health` and `/health/ready`; Prometheus metrics are at
-`/metrics`. See the [API reference](docs/API.md) for every endpoint, its
-parameters, authentication requirements, and response examples.
+Routes are split into two groups:
+
+| Prefix | Routes |
+|--------|--------|
+| `/v1`  | NGOs, streams, donors, impact, NGO applications, indexer status |
+| _(none)_ | `GET /health`, `GET /health/ready`, `GET /metrics` |
+
+`GET /v1/health` is **not** a valid route and returns 404. Health checks and
+metrics sit at the root so load balancers and uptime monitors can reach them
+without knowing the API version.
+
+See the [API reference](docs/API.md) for every endpoint, its parameters,
+authentication requirements, and response examples.
 
 Interactive API documentation via Swagger UI is available at `/docs` (e.g.
 `http://localhost:3000/docs` in local development), and the OpenAPI JSON document
