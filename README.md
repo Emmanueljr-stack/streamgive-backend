@@ -19,6 +19,15 @@ are available at `/health` and `/health/ready`; Prometheus metrics are at
 `/metrics`. See the [API reference](docs/API.md) for every endpoint, its
 parameters, authentication requirements, and response examples.
 
+Interactive API documentation via Swagger UI is available at `/docs` (e.g.
+`http://localhost:3000/docs` in local development), and the OpenAPI JSON document
+is available at `/docs/json`.
+
+Swagger UI and the OpenAPI JSON endpoints are only registered outside of
+production (`NODE_ENV !== 'production'`). In production environments, Swagger UI
+is disabled and the `/docs` route is not registered (returning 404). For API
+documentation on deployed production instances, consult the [API reference](docs/API.md).
+
 ## Rate limits
 
 The API allows up to **100 requests per minute per client IP** by default.
