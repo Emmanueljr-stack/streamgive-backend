@@ -25,7 +25,7 @@ within the same transaction as its primary state mutation.
 
 | Topic      | Handled | DB writes                                                                                                                                                                                                                        |
 | ---------- | ------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `register` | Yes     | Upserts `ngos` row (`ownerAddress`, `name`, `verified = false`). Updates `name` if the row already exists. Writes a `StreamEvent` row (`type = 'register'`).                                                                     |
+| `register` | Yes     | Upserts `ngos` row (`ownerAddress`, `name`, `verified = false`). Updates `name` if the row already exists. Writes a `StreamEvent` row (`type = 'register'`). Emits an `ngo_registered` notification. |
 | `approved` | Yes     | Sets `verified = true` on the matching `ngos` row via `updateMany` (no-ops if the row does not exist yet — safe for a mid-history start). Writes a `StreamEvent` row (`type = 'approved'`). Emits a `ngo_approved` notification. |
 | `revoked`  | Yes     | Sets `verified = false` on the matching `ngos` row via `updateMany` (no-ops if the row does not exist yet). Writes a `StreamEvent` row (`type = 'revoked'`). Emits a `ngo_revoked` notification.                                 |
 
