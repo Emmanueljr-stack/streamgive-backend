@@ -232,7 +232,7 @@ describe('GET /v1/streams', () => {
     const app = buildServer();
 
     const donor = await prisma.donor.create({ data: { address: fakeAddress('A') } });
-    const ngo = await prisma.go.create({
+    const ngo = await prisma.ngo.create({
       data: { ownerAddress: fakeAddress('B'), name: 'NGO', verified: true },
     });
     const otherNgo = await prisma.ngo.create({
@@ -324,10 +324,10 @@ describe('GET /v1/streams', () => {
     const app = buildServer();
 
     const donor = await prisma.donor.create({ data: { address: fakeAddress('A') } });
-    const ngo = await prisma.go.create({
+    const ngo = await prisma.ngo.create({
       data: { ownerAddress: fakeAddress('B'), name: 'Target NGO', verified: true },
     });
-    const otherNgo = await prisma.go.create({
+    const otherNgo = await prisma.ngo.create({
       data: { ownerAddress: fakeAddress('C'), name: 'Other NGO', verified: true },
     });
 
@@ -371,7 +371,7 @@ describe('GET /v1/streams', () => {
     const app = buildServer();
 
     const donor = await prisma.donor.create({ data: { address: fakeAddress('A') } });
-    const ngo = await prisma.go.create({
+    const ngo = await prisma.ngo.create({
       data: { ownerAddress: fakeAddress('B'), name: 'NGO', verified: true },
     });
 
@@ -546,7 +546,7 @@ describe('GET /v1/streams/:id', () => {
       },
     });
 
-    const response = await app.inject({ method: 'GET', url: `/streams/${stream.id}` });
+    const response = await app.inject({ method: 'GET', url: `/v1/streams/${stream.id}` });
     expect(response.statusCode).toBe(200);
 
     const body = response.json();
@@ -574,7 +574,7 @@ describe('GET /v1/streams/:id', () => {
       },
     });
 
-    const response = await app.inject({ method: 'GET', url: `/streams/${stream.id}` });
+    const response = await app.inject({ method: 'GET', url: `/v1/streams/${stream.id}` });
     expect(response.statusCode).toBe(200);
 
     const body = response.json();
@@ -609,7 +609,7 @@ describe('GET /v1/streams/:id', () => {
 
     const donor = await prisma.donor.create({ data: { address: fakeAddress('A') } });
     // Placeholder NGO: name is empty, not yet registered on-chain.
-    const ngo = await prisma.go.create({
+    const ngo = await prisma.ngo.create({
       data: { ownerAddress: fakeAddress('B'), name: '', verified: false },
     });
     const stream = await prisma.stream.create({
