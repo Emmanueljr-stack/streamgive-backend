@@ -168,6 +168,10 @@ diagram and the exact calculations used by `/ngos/:id` and `/impact/:ngoId`.
 
 ## Notification events
 
+The webhook body is a JSON object discriminated by `type`. The full payload
+shapes, including `ngo_registered`, are documented in
+[docs/NOTIFICATIONS.md](./docs/NOTIFICATIONS.md).
+
 ```js
 import { createHmac, timingSafeEqual } from 'node:crypto';
 
