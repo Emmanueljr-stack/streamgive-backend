@@ -662,7 +662,7 @@ describe('GET /v1/streams/:id/activity', () => {
     });
 
     // Created oldest first so the response order is CANCELLED -> WITHDRAWAL -> TOP_UP.
-    for (const type of ['TOP_UP', 'WITHDRAWAL', 'CANCELLED'] as const) {
+    for (const [index, type] of (['TOP_UP', 'WITHDRAWAL', 'CANCELLED'] as const).entries()) {
       await prisma.streamEvent.create({
         data: {
           streamId: stream.onChainId,
@@ -670,6 +670,7 @@ describe('GET /v1/streams/:id/activity', () => {
           ledger: 100,
           txHash: 'aabbcc',
           payload: {},
+          createdAt: new Date(Date.UTC(2026, 0, 1, 0, 0, index)),
         },
       });
     }
@@ -749,7 +750,7 @@ describe('GET /v1/streams/:id/activity', () => {
     });
 
     // Created oldest first so newest-first order is CANCELLED, WITHDRAWAL, TOP_UP.
-    for (const type of ['TOP_UP', 'WITHDRAWAL', 'CANCELLED'] as const) {
+    for (const [index, type] of (['TOP_UP', 'WITHDRAWAL', 'CANCELLED'] as const).entries()) {
       await prisma.streamEvent.create({
         data: {
           streamId: stream.onChainId,
@@ -757,6 +758,7 @@ describe('GET /v1/streams/:id/activity', () => {
           ledger: 100,
           txHash: 'aabbcc',
           payload: {},
+          createdAt: new Date(Date.UTC(2026, 0, 1, 0, 0, index)),
         },
       });
     }
