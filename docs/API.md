@@ -28,10 +28,65 @@ seconds.
 
 Routes marked **Public** do not require authentication. Public directory,
 stream, and impact endpoints may return `304 Not Modified` when the
-`If-None-Match` header matches their ETag.
+`If-None-Match` header matches their ETag. See [Caching and conditional requests](#caching-and-conditional-requests).
 
 Unknown routes return `404` with the same body used by every other missing
 resource: `{"error":"not_found"}`.
+
+## Caching and conditional requests
+
+Eleven public read endpoints send a validator and a short shared-cache
+lifetime. Everything else is uncached.
+
+| Method and path | Cacheable |
+|---|---|
+| `GET /v1/ngos` | Yes |
+| `GET /v1/ngos/lookup` | Yes |
+| `GET /v1/ngos/{id}` | Yes |
+| `GET /v1/ngos/{id}/donors` | Yes |
+| `GET /v1/donors` | Yes |
+| `GET /v1/donors/{address}` | Yes |
+| `GET /v1/streams` | Yes |
+| `GET /v1/streams/{id}` | Yes |
+| `GET /v1/streams/{id}/activity` | Yes |
+| `GET /v1/impact` | Yes |
+| `GET /v1/impact/{ngoId}` | Yes |
+
+Not cacheable: `GET /v1/ngos/all`, `GET /v1/ngo-applications*`, the admin
+routes, `GET /v1/donors/{address}/streams.csv`, `GET /v1/indexer/status`,
+`GET /health`, `GET /health/ready`, and `GET /metrics`.
+
+### Headers
+
+A cacheable response carries:
+
+```
+Cache-Control: public, max-age=30, stale-while-revalidate=60
+ETag: "<base64url SHA-256 of the response body>"
+```
+
+The ETag is computed over the exact JSON bytes sent, so it changes whenever
+the body changes. Responses are not personalised, so a shared cache may store
+them for 30 seconds and serve a stale copy for up to a further 60 seconds
+while it revalidates.
+
+### Conditional requests
+
+Send the ETag back in `If-None-Match` to get a body-less `304 Not Modified`
+while the resource is unchanged:
+
+```
+GET /v1/ngos/{id} HTTP/1.1
+If-None-Match: "3f2a…"
+
+HTTP/1.1 304 Not Modified
+Cache-Control: public, max-age=30, stale-while-revalidate=60
+ETag: "3f2a…"
+```
+
+`If-None-Match` accepts a comma-separated list of ETags, weak validators
+(`W/"…"`, compared as strong), and `*`. A request whose validator no longer
+matches receives the full `200` response with the new ETag.
 
 ## Integer and amount representation
 
